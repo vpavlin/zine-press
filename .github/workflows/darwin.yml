@@ -38,6 +38,10 @@ jobs:
               cp -L res-$name/*.lgx "out/$name-darwin-arm64.lgx"; echo "$name OK"
             else
               echo "$name FAILED"; tail -80 "logs/$name.log"; ok=0
+              # the full builder log of each failed derivation (the error shows only its last lines)
+              for drv in $(grep -oE "/nix/store/[a-z0-9]+-[^ ']+\.drv" "logs/$name.log" | sort -u); do
+                echo "=== nix log $drv" >> "logs/$name.log"; nix log "$drv" >> "logs/$name.log" 2>&1 || true
+              done
             fi
           done
           [ $ok = 1 ]
