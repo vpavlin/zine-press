@@ -2,13 +2,18 @@
 #include "zine_pdf.hpp"
 #include "zine_plan.hpp"
 
-#include <qpdf/Pl_Buffer.hh>
-#include <qpdf/Pl_DCT.hh>
 #include <qpdf/QPDF.hh>
 #include <qpdf/QPDFPageDocumentHelper.hh>
 #include <qpdf/QPDFPageObjectHelper.hh>
 #include <qpdf/QPDFWriter.hh>
+#if __has_include(<fpdfview.h>)
 #include <fpdfview.h>
+#else
+#include <public/fpdfview.h>
+#endif
+#include <cstdio>
+#include <cstdlib>
+#include <jpeglib.h>
 
 #include <cmath>
 #include <filesystem>
@@ -128,9 +133,18 @@ void addVectorSide(QPDF& out, Source& src, const Side& side) {
     QPDFPageDocumentHelper(out).addPage(ph, false);
 }
 
-// One sheet side as a JPEG image covering the A4 page
-void addImageSide(QPDF& out, const std::string& jpeg, int w, int h) {
+// One sheet side as a JPEG image covering the A4 page. cache: one image object per side in a file,
+// so whole copies in a batch don't store each image again.
+void addImageSide(QPDF& out, const std::string& jpeg, int w, int h, std::map<const std::string*, QPDFObjectHandle>& cache) {
     QPDFObjectHandle page = newSheetPage(out);
+    auto hit = cache.find(&jpeg);
+    if (hit != cache.end()) {
+        page.getKey("/Resources").getKey("/XObject").replaceKey("/Im0", hit->second);
+        std::ostringstream c; c.precision(4); c << std::fixed << "q " << kA4W << " 0 0 " << kA4H << " 0 0 cm /Im0 Do Q\n";
+        page.replaceKey("/Contents", QPDFObjectHandle::newStream(&out, c.str()));
+        QPDFPageDocumentHelper(out).addPage(QPDFPageObjectHelper(page), false);
+        return;
+    }
     QPDFObjectHandle img = QPDFObjectHandle::newStream(&out);
     QPDFObjectHandle d = img.getDict();
     d.replaceKey("/Type", QPDFObjectHandle::newName("/XObject"));
@@ -140,6 +154,7 @@ void addImageSide(QPDF& out, const std::string& jpeg, int w, int h) {
     d.replaceKey("/ColorSpace", QPDFObjectHandle::newName("/DeviceRGB"));
     d.replaceKey("/BitsPerComponent", QPDFObjectHandle::newInteger(8));
     img.replaceStreamData(jpeg, QPDFObjectHandle::newName("/DCTDecode"), QPDFObjectHandle::newNull());
+    cache[&jpeg] = img;
     page.getKey("/Resources").getKey("/XObject").replaceKey("/Im0", img);
     std::ostringstream c; c.precision(4); c << std::fixed << "q " << kA4W << " 0 0 " << kA4H << " 0 0 cm /Im0 Do Q\n";
     page.replaceKey("/Contents", QPDFObjectHandle::newStream(&out, c.str()));
@@ -164,13 +179,29 @@ void pdfiumInit() {
     done = true;
 }
 
+// libjpeg directly (qpdf's Pl_DCT compress config isn't in qpdf 11, the version the Basecamp builder pins)
 std::string jpegOf(const std::vector<unsigned char>& rgb, int w, int h, int quality) {
-    Pl_Buffer buf("jpeg");
-    auto cfg = Pl_DCT::make_compress_config([quality](jpeg_compress_struct* c) { jpeg_set_quality(c, quality, TRUE); });
-    Pl_DCT dct("dct", &buf, (JDIMENSION)w, (JDIMENSION)h, 3, JCS_RGB, cfg.get());
-    dct.write(rgb.data(), rgb.size());
-    dct.finish();
-    return buf.getString();
+    jpeg_compress_struct c;
+    jpeg_error_mgr err;
+    c.err = jpeg_std_error(&err);
+    jpeg_create_compress(&c);
+    unsigned char* mem = nullptr;
+    unsigned long memLen = 0;
+    jpeg_mem_dest(&c, &mem, &memLen);
+    c.image_width = (JDIMENSION)w; c.image_height = (JDIMENSION)h;
+    c.input_components = 3; c.in_color_space = JCS_RGB;
+    jpeg_set_defaults(&c);
+    jpeg_set_quality(&c, quality, TRUE);
+    jpeg_start_compress(&c, TRUE);
+    while (c.next_scanline < c.image_height) {
+        JSAMPROW row = const_cast<JSAMPROW>(rgb.data() + (size_t)c.next_scanline * w * 3);
+        jpeg_write_scanlines(&c, &row, 1);
+    }
+    jpeg_finish_compress(&c);
+    std::string out(reinterpret_cast<char*>(mem), memLen);
+    jpeg_destroy_compress(&c);
+    free(mem);
+    return out;
 }
 
 } // namespace
@@ -284,8 +315,9 @@ json make(const std::string& path, const std::string& outDir, const Options& o, 
         json files = json::array();
         auto writeSides = [&](const std::string& name, const std::vector<int>& idx, const std::string& what) {
             QPDF out; out.emptyPDF();
+            std::map<const std::string*, QPDFObjectHandle> imgs;
             for (int k : idx) {
-                if (o.flatten) addImageSide(out, jpegs[k], pxW, pxH);
+                if (o.flatten) addImageSide(out, jpegs[k], pxW, pxH, imgs);
                 else addVectorSide(out, src, sides[k]);
             }
             const std::string p = (fs::path(outDir) / name).string();

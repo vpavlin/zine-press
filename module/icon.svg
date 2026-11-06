@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <rect width="256" height="256" rx="48" fill="#1b1b1f"/>
+  <!-- an open A5 booklet seen from above: two pages and the fold -->
+  <path d="M128 70 L44 58 L44 196 L128 208 Z" fill="#f4efe6"/>
+  <path d="M128 70 L212 58 L212 196 L128 208 Z" fill="#ffffff"/>
+  <path d="M128 70 L128 208" stroke="#c9c2b6" stroke-width="3"/>
+  <!-- text lines -->
+  <g stroke="#9a948a" stroke-width="5" stroke-linecap="round">
+    <path d="M62 92 L112 98"/><path d="M62 110 L112 116"/><path d="M62 128 L104 133"/>
+    <path d="M144 98 L194 92"/><path d="M144 116 L194 110"/><path d="M144 134 L186 129"/>
+  </g>
+  <rect x="144" y="148" width="48" height="34" rx="3" fill="#ff8a3d" transform="skewY(-7) translate(0 20)"/>
+  <!-- the three-hole pamphlet stitch in orange thread -->
+  <g fill="none" stroke="#ff6a13" stroke-width="6" stroke-linecap="round">
+    <path d="M128 84 L128 194"/>
+    <path d="M128 139 C 112 150, 112 170, 124 178"/>
+  </g>
+  <g fill="#ff6a13"><circle cx="128" cy="84" r="6"/><circle cx="128" cy="139" r="6"/><circle cx="128" cy="194" r="6"/></g>
+</svg>

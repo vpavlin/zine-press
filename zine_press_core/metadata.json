@@ -1,0 +1,23 @@
+{
+ "name": "zine_press_core",
+ "version": "0.1.0",
+ "type": "core",
+ "interface": "universal",
+ "category": "productivity",
+ "description": "Zine Press core: turns a PDF into the files for printing it at home as an A5 saddle-stitched booklet on A4 (booklet.pdf for two-sided printers, fronts + backs for one-sided ones, a one-sheet test, a printing and binding guide). Vector imposition with qpdf, optional 300 dpi flattening with PDFium.",
+ "main": "zine_press_core_plugin",
+ "dependencies": [],
+ "nix": {
+  "packages": {
+   "build": ["qpdf", "libjpeg", "pdfium-binaries"],
+   "runtime": ["qpdf", "libjpeg", "pdfium-binaries"]
+  },
+  "external_libraries": [],
+  "cmake": {
+   "find_packages": [],
+   "extra_sources": [],
+   "extra_include_dirs": [],
+   "extra_link_libraries": []
+  }
+ }
+}
