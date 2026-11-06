@@ -9,6 +9,8 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace zine {
 
@@ -24,6 +26,9 @@ struct Options {
     bool flatten = true;          // render to images (fast and small for home printers)
     int dpi = 300;
     int quality = 85;             // JPEG quality when flattening
+    // Reprint only these sheet sides (0-based sheet, back?) after a double-feed: make() then writes
+    // just reprint-fronts.pdf / reprint-backs.pdf, one copy, in the same order as the full passes
+    std::vector<std::pair<int, bool>> reprint;
 };
 Options parseOptions(const std::string& optionsJson);
 json optionsToJson(const Options& o);
@@ -33,7 +38,8 @@ using Progress = std::function<void(double fraction, const std::string& step)>;
 // {ok, path, pages, pageMm:[w,h], fit: a5|a5-bleed|other, sizes (distinct page sizes), sheets, plan}
 json inspect(const std::string& path, const Options& o = Options());
 // Writes the files into outDir (created): booklet.pdf, fronts.pdf + backs.pdf (or batch-N-*),
-// test-sheet.pdf, HOW-TO-PRINT.txt. Returns {ok, outDir, files:[{name, path, sheets, what}], ...}.
+// test-sheet.pdf, HOW-TO-PRINT.txt. With o.reprint set: only reprint-fronts.pdf / reprint-backs.pdf.
+// Returns {ok, outDir, files:[{name, path, sheets, what}], ...}.
 json make(const std::string& path, const std::string& outDir, const Options& o, Progress progress = nullptr);
 // The printing guide for this job (also written as HOW-TO-PRINT.txt)
 std::string guideText(int pages, int sheets, const Options& o, const json& files);

@@ -18,6 +18,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -221,6 +222,16 @@ Options parseOptions(const std::string& text) {
     o.flatten = flag("flatten", o.flatten);
     o.dpi = (int)num("dpi", 100, 600, o.dpi);
     o.quality = (int)num("quality", 50, 95, o.quality);
+    // "reprint": [{"sheet": 3, "side": "back"}, ...] - sheets 1-based, as the view shows them
+    if (j.contains("reprint") && j["reprint"].is_array())
+        for (const auto& r : j["reprint"]) {
+            if (!r.is_object() || !r.contains("sheet") || !r["sheet"].is_number_integer()) continue;
+            const int sheet = r["sheet"].get<int>() - 1;
+            const std::string side = r.value("side", "");
+            if (sheet < 0 || (side != "front" && side != "back")) continue;
+            std::pair<int, bool> k{sheet, side == "back"};
+            if (std::find(o.reprint.begin(), o.reprint.end(), k) == o.reprint.end()) o.reprint.push_back(k);
+        }
     return o;
 }
 json optionsToJson(const Options& o) {
@@ -277,23 +288,37 @@ json make(const std::string& path, const std::string& outDir, const Options& o, 
         // every sheet side in booklet order: side 2i = sheet i front, 2i+1 = its back
         std::vector<Side> sides;
         for (const auto& s : sh) { sides.push_back(s.front); sides.push_back(s.back); }
+        // a reprint only needs its own sides rendered and written
+        std::vector<int> rFronts, rBacks;
+        for (const auto& r : o.reprint) {
+            if (r.first >= S) return {{"ok", false}, {"error", "there is no sheet " + std::to_string(r.first + 1) + " (this booklet has " + std::to_string(S) + ")"}};
+            (r.second ? rBacks : rFronts).push_back(r.first);
+        }
+        const bool reprinting = !o.reprint.empty();
+        std::sort(rFronts.begin(), rFronts.end());
+        std::sort(rBacks.begin(), rBacks.end());
+        if (o.reverseFronts) std::reverse(rFronts.begin(), rFronts.end());
+        std::vector<int> need;   // side indices to render
+        if (reprinting) { for (int f : rFronts) need.push_back(2 * f); for (int b : rBacks) need.push_back(2 * b + 1); }
+        else for (int i = 0; i < 2 * S; i++) need.push_back(i);
 
         // flatten: render each side once, reuse the JPEG in every file
-        std::vector<std::string> jpegs;
+        std::map<int, std::string> jpegs;   // side index -> JPEG
         int pxW = 0, pxH = 0;
         if (o.flatten) {
             step(0.05, "arranging the pages");
             const std::string vec = (fs::path(outDir) / ".vector-booklet.pdf").string();
-            { QPDF out; out.emptyPDF(); for (const auto& sd : sides) addVectorSide(out, src, sd); writePdf(out, vec); }
+            { QPDF out; out.emptyPDF(); for (int k : need) addVectorSide(out, src, sides[k]); writePdf(out, vec); }
             pxW = (int)std::lround(kA4W / 72.0 * o.dpi); pxH = (int)std::lround(kA4H / 72.0 * o.dpi);
             std::lock_guard<std::mutex> lk(pdfiumLock());
             pdfiumInit();
             FPDF_DOCUMENT doc = FPDF_LoadDocument(vec.c_str(), nullptr);
             if (!doc) { fs::remove(vec); return {{"ok", false}, {"error", "couldn't render the pages (PDFium)"}}; }
             std::vector<unsigned char> rgb((size_t)pxW * pxH * 3);
-            for (int i = 0; i < (int)sides.size(); i++) {
-                step(0.08 + 0.8 * i / sides.size(), "rendering sheet " + std::to_string(i / 2 + 1) + (i % 2 ? " back" : " front") + " at " + std::to_string(o.dpi) + " dpi");
-                FPDF_PAGE pg = FPDF_LoadPage(doc, i);
+            for (int n2 = 0; n2 < (int)need.size(); n2++) {
+                const int i = need[n2];
+                step(0.08 + 0.8 * n2 / need.size(), "rendering sheet " + std::to_string(i / 2 + 1) + (i % 2 ? " back" : " front") + " at " + std::to_string(o.dpi) + " dpi");
+                FPDF_PAGE pg = FPDF_LoadPage(doc, n2);
                 FPDF_BITMAP bmp = FPDFBitmap_Create(pxW, pxH, 0);
                 FPDFBitmap_FillRect(bmp, 0, 0, pxW, pxH, 0xFFFFFFFF);
                 FPDF_RenderPageBitmap(bmp, pg, 0, 0, pxW, pxH, 0, FPDF_PRINTING | FPDF_ANNOT);
@@ -306,7 +331,7 @@ json make(const std::string& path, const std::string& outDir, const Options& o, 
                 }
                 FPDFBitmap_Destroy(bmp);
                 FPDF_ClosePage(pg);
-                jpegs.push_back(jpegOf(rgb, pxW, pxH, o.quality));
+                jpegs[i] = jpegOf(rgb, pxW, pxH, o.quality);
             }
             FPDF_CloseDocument(doc);
             fs::remove(vec);
@@ -317,7 +342,7 @@ json make(const std::string& path, const std::string& outDir, const Options& o, 
             QPDF out; out.emptyPDF();
             std::map<const std::string*, QPDFObjectHandle> imgs;
             for (int k : idx) {
-                if (o.flatten) addImageSide(out, jpegs[k], pxW, pxH, imgs);
+                if (o.flatten) addImageSide(out, jpegs.at(k), pxW, pxH, imgs);
                 else addVectorSide(out, src, sides[k]);
             }
             const std::string p = (fs::path(outDir) / name).string();
@@ -325,6 +350,19 @@ json make(const std::string& path, const std::string& outDir, const Options& o, 
             files.push_back({{"name", name}, {"path", p}, {"pages", (int)idx.size()}, {"bytes", (long long)fs::file_size(p)}, {"what", what}});
         };
         step(0.9, "writing the files");
+        if (reprinting) {
+            auto list = [](const std::vector<int>& v) { std::string t; for (int x : v) t += (t.empty() ? "" : ", ") + std::to_string(x + 1); return t; };
+            // an older reprint's files would be mistaken for this one's
+            fs::remove(fs::path(outDir) / "reprint-fronts.pdf");
+            fs::remove(fs::path(outDir) / "reprint-backs.pdf");
+            std::vector<int> f, k;
+            for (int x : rFronts) f.push_back(2 * x);
+            for (int x : rBacks) k.push_back(2 * x + 1);
+            if (!f.empty()) writeSides("reprint-fronts.pdf", f, "reprint: the front of sheet" + std::string(f.size() > 1 ? "s " : " ") + list(rFronts) + (o.reverseFronts && f.size() > 1 ? ", last sheet first" : ""));
+            if (!k.empty()) writeSides("reprint-backs.pdf", k, "reprint: the back of sheet" + std::string(k.size() > 1 ? "s " : " ") + list(rBacks) + (k.size() > 1 ? ", first sheet first" : ""));
+            step(1.0, "done");
+            return {{"ok", true}, {"outDir", outDir}, {"reprint", true}, {"sheets", S}, {"files", files}, {"options", optionsToJson(o)}};
+        }
         std::vector<int> all; for (int i = 0; i < 2 * S; i++) all.push_back(i);
         writeSides("booklet.pdf", all, "both sides, for a printer that prints both sides: flip on the short edge");
         const auto ps = passes(S, o.copies, o.batch, o.reverseFronts);
@@ -376,13 +414,26 @@ std::string guideText(int pages, int S, const Options& o, const json& files) {
     if (o.reverseFronts) g << "It runs last sheet first: most one-sided printers stack the\n"
                            << "     output face up with the last sheet on top, so the stack comes out ready for the backs.\n";
     else g << "It runs first sheet first (you turned off the reverse order).\n";
-    g << "  3. Let the sheets dry a few minutes, then fan them so they don't stick together.\n"
+    g << "  3. Let the fronts dry 10-15 minutes, then fan them well before they go back in. Fresh ink\n"
+      << "     makes sheets cling together: double-feeds happen on the backs pass, not the fronts.\n"
       << "  4. Put the whole stack back in the tray the way the test showed, and print the backs file.\n"
       << "  5. The finished stack is in order: the cover sheet at the bottom, cover face down.\n";
     if (o.copies > 1) g << "  " << o.copies << " copies in batches of " << o.batch << ": each batch file holds whole copies (collated).\n"
                         << "  A double-feed (two sheets pulled at once) ruins every sheet after it in that batch -\n"
                         << "  small batches keep the damage small.\n";
     g << "\n"
+      << "IF TWO SHEETS GO THROUGH AT ONCE (a double-feed)\n"
+      << "  1. Cancel the job on the printer straight away.\n"
+      << "  2. Sort the sheets into three piles: back printed correctly (done), back still blank\n"
+      << "     (needs only its back), back printed wrong (spoiled: needs both sides again).\n"
+      << "     The page numbers on a sheet tell you which sheet it is (see the sheet plan in the app).\n"
+      << "  3. In Zine Press, mark those sheet sides on the sheet plan and press Reprint: you get\n"
+      << "     reprint-fronts.pdf and reprint-backs.pdf with just those sides. Print the fronts and let\n"
+      << "     them dry. Stack them with the blank-back sheets in sheet order, as the backs pass had them,\n"
+      << "     put the stack in the same way round as before and print the backs.\n\n"
+      << "OUT OF PAPER IN THE MIDDLE OF A JOB\n"
+      << "  Add paper, push the tray fully in and press the button the printer asks for (on a Brother:\n"
+      << "  Mono Copy). The job carries on where it stopped.\n\n"
       << "IF SOMETHING LOOKS WRONG\n"
       << "  - White bands across photos: run a head cleaning from the printer's menu, then print again.\n"
       << "  - Very slow printing: use the flattened files (Zine Press does this by default, at 300 dpi).\n"

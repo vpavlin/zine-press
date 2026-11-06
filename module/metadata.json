@@ -1,7 +1,7 @@
 {
   "name": "zine_press",
   "display_name": "Zine Press",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "ui_qml",
   "category": "productivity",
   "description": "Print a zine at home: pick a PDF and get the files for an A5 saddle-stitched booklet on A4 (two-sided or one-sided printers), the sheet plan, and step-by-step printing, folding and binding instructions. A view over the zine_press_core module.",

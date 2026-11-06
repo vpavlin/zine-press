@@ -19,6 +19,8 @@ Item {
     property string jobId: ""
     property var job: null               // job() result while running / when done
     property var result: null            // the finished make() result
+    property var reprintResult: null     // the finished reprint (make() with options.reprint)
+    property var marks: ({})             // sheet sides to reprint: {"3-back": true, ...} (1-based sheets)
     property string error: ""
     property string tab: "print"         // guide tab: print | bind | trouble
 
@@ -56,6 +58,7 @@ Item {
     function pick(url) {
         root.pdfPath = String(url);
         root.result = null; root.job = null; root.error = ""; root.outDir = "";
+        root.reprintResult = null; root.marks = {};
         inspectNow();
     }
     function inspectNow() {
@@ -71,7 +74,26 @@ Item {
     function makeNow() {
         if (!root.info || root.busy) return;
         root.result = null; root.error = "";
-        callVia("make", [root.pdfPath, JSON.stringify(options())], function (raw) {
+        startMake(options());
+    }
+    // ── reprint: after a double-feed, only the marked sheet sides ──
+    function markKey(sheet, side) { return sheet + "-" + side; }
+    function toggleMark(sheet, side) {
+        var m = Object.assign({}, root.marks), k = markKey(sheet, side);
+        if (m[k]) delete m[k]; else m[k] = true;
+        root.marks = m;
+    }
+    readonly property int markCount: Object.keys(root.marks).length
+    function reprintNow() {
+        if (!root.info || root.busy || root.markCount === 0) return;
+        var o = options(), list = [];
+        for (var k in root.marks) { var p = k.split("-"); list.push({ sheet: parseInt(p[0]), side: p[1] }); }
+        o.reprint = list;
+        root.reprintResult = null; root.error = "";
+        startMake(o);
+    }
+    function startMake(o) {
+        callVia("make", [root.pdfPath, JSON.stringify(o)], function (raw) {
             var r = parse(raw);
             if (!r || !r.ok) { root.error = r && r.error ? r.error : "couldn't start"; return; }
             root.jobId = r.jobId; root.outDir = r.outDir || root.outDir;
@@ -89,13 +111,13 @@ Item {
             root.job = r;
             if (r.state !== "running") {
                 poll.stop();
-                if (r.state === "done") root.result = r.result;
+                if (r.state === "done") { if (r.result && r.result.reprint) root.reprintResult = r.result; else root.result = r.result; }
                 else root.error = (r.result && r.result.error) || "making the booklet failed";
             }
         })
     }
     // options that change the sheet plan: ask again
-    onCutChanged: inspectNow()
+    onCutChanged: { root.marks = {}; root.reprintResult = null; inspectNow() }
 
     function fileNamed(n) {
         if (!root.result || !root.result.files) return null;
@@ -244,7 +266,7 @@ Item {
                 Repeater {
                     model: root.info ? root.info.plan : []
                     Rectangle {
-                        width: 168; height: 88; radius: Theme.spacing.radiusMedium
+                        width: 168; height: 100; radius: Theme.spacing.radiusMedium
                         color: Theme.palette.backgroundElevated; border.color: Theme.palette.borderHairline
                         Column {
                             anchors.centerIn: parent
@@ -252,12 +274,42 @@ Item {
                             LogosText { textFormat: Text.PlainText; text: "Sheet " + (index + 1); color: Theme.palette.textTertiary; font.pixelSize: Theme.typography.secondaryText }
                             Row {
                                 spacing: 6
-                                Spread { label: "front"; pageL: modelData.front[0]; pageR: modelData.front[1] }
-                                Spread { label: "back"; pageL: modelData.back[0]; pageR: modelData.back[1] }
+                                Spread { label: "front"; sheet: index + 1; pageL: modelData.front[0]; pageR: modelData.front[1] }
+                                Spread { label: "back"; sheet: index + 1; pageL: modelData.back[0]; pageR: modelData.back[1] }
                             }
                         }
                     }
                 }
+            }
+
+            // a double-feed spoilt some sheets: mark their sides above, print just those again
+            ColumnLayout {
+                visible: !!root.info && !root.duplex
+                Layout.fillWidth: true
+                spacing: Theme.spacing.small
+                LogosText { textFormat: Text.PlainText;
+                    Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
+                    text: root.markCount === 0
+                          ? "Two sheets went through at once? Tap the sides that need printing again (a blank back, or both sides of a spoilt sheet), then Reprint."
+                          : root.markCount + " side" + (root.markCount > 1 ? "s" : "") + " marked for reprinting."
+                    color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText
+                }
+                RowLayout {
+                    visible: root.markCount > 0
+                    spacing: Theme.spacing.medium
+                    LogosButton { text: root.busy ? "Making..." : "Reprint"; enabled: !root.busy; onClicked: root.reprintNow() }
+                    LogosButton { text: "Clear"; enabled: !root.busy; onClicked: { root.marks = {}; root.reprintResult = null } }
+                }
+                Repeater {
+                    model: root.reprintResult ? root.reprintResult.files : []
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: Theme.spacing.small
+                        LogosText { textFormat: Text.PlainText; text: modelData.name; font.weight: Font.Medium; color: Theme.palette.primary; font.pixelSize: Theme.typography.primaryText; Layout.preferredWidth: 150 }
+                        LogosText { textFormat: Text.PlainText; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap; text: modelData.what + " - " + root.mb(modelData.bytes); color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
+                    }
+                }
+                LogosButton { visible: !!root.reprintResult; text: "Open the folder"; onClicked: Qt.openUrlExternally(root.folderUrl(root.reprintResult.outDir)) }
             }
 
             RowLayout {
@@ -308,11 +360,12 @@ Item {
         + "Print page 2. Fold it: the inside of the cover must be page 2. If it isn't, turn the sheet the other way and note what works: "
         + "that is how the whole stack goes back in.\n\n"
         + "2. Print the fronts file" + (root.reverseFronts ? " (it runs last sheet first, so the stack comes out ready for the backs)" : "") + ".\n\n"
-        + "3. Let the sheets dry a few minutes, then fan them so they don't stick together.\n\n"
+        + "3. Let the fronts dry 10-15 minutes, then fan them well before they go back in. Fresh ink makes sheets cling together: double-feeds happen on the backs pass.\n\n"
         + "4. Put the stack back in the tray the way the test showed, and print the backs file.\n\n"
         + "5. The finished stack is in order: the cover sheet at the bottom, cover face down.\n\n"
         + (root.copies > 1 ? "With " + root.copies + " copies the files come in batches of " + root.batch + " (each batch holds whole copies). Print one batch's fronts and backs before the next: a double-feed then only ruins one batch.\n\n" : "")
-        + "Before a big run: pull the paper stack out, fan it and put it back square - most double-feeds come from sheets stuck together."
+        + "Before a big run: pull the paper stack out, fan it and put it back square - most double-feeds come from sheets stuck together.\n\n"
+        + "Out of paper in the middle of a job: add paper, push the tray fully in and press the button the printer asks for (on a Brother: Mono Copy). The job carries on where it stopped."
     readonly property string guideBind:
         "Fold each sheet in half on its own and crease it with a fingernail or a spoon. Nest them in order, sheet 1 on the outside.\n\n"
         + "Three-hole pamphlet stitch (needle, about 60 cm of thread):\n"
@@ -329,7 +382,12 @@ Item {
         + "Printing is very slow: turn on \"Flatten to 300 dpi images\" - a zine full of detailed drawings is millions of shapes the printer driver has to draw one by one.\n\n"
         + "The backs are upside down: the stack went back in the wrong way round. Do the one-sheet test again and turn the stack the way it showed.\n\n"
         + "The page order is wrong after printing the backs: your printer stacks face down. Turn off \"Fronts last sheet first\" and make the files again.\n\n"
-        + "Two sheets went through at once: throw away the rest of that batch and print it again - that is why batches are small.\n\n"
+        + "Two sheets went through at once (a double-feed):\n"
+        + "1. Cancel the job on the printer straight away.\n"
+        + "2. Sort the sheets into three piles: back printed correctly (done), back still blank (needs only its back), back printed wrong (spoilt: needs both sides again). The page numbers tell you which sheet each one is - match them against the sheet plan.\n"
+        + "3. On the sheet plan, tap the sides to print again and press Reprint. You get reprint-fronts.pdf and reprint-backs.pdf with just those sides.\n"
+        + "4. Print the fronts and let them dry. Stack them with the blank-back sheets in sheet order, as the backs pass had them, put the stack in the same way round as before and print the backs.\n\n"
+        + "Out of paper in the middle of a job: add paper, push the tray fully in and press the button the printer asks for (on a Brother: Mono Copy). The job carries on.\n\n"
         + "Pages are cut off at the edge: turn off Borderless (or your printer has a wider margin than most - try the whole page option)."
 
     // ── small parts ──
@@ -409,22 +467,36 @@ Item {
         LogosText { textFormat: Text.PlainText; anchors.centerIn: parent; text: sb.text; color: Theme.palette.text; font.pixelSize: Theme.typography.subtitleText }
         MouseArea { anchors.fill: parent; enabled: sb.enabled; cursorShape: Qt.PointingHandCursor; onClicked: sb.clicked() }
     }
-    component Spread: Column {
+    component Spread: Item {
+        id: sp
         property string label: ""
+        property int sheet: 0
         property var pageL
         property var pageR
-        spacing: 2
-        Row {
-            spacing: 1
-            Repeater {
-                model: [pageL, pageR]
-                Rectangle {
-                    width: 34; height: 44; radius: 2
-                    color: modelData === null || modelData === undefined ? Theme.palette.backgroundInset : Theme.palette.surface
-                    LogosText { textFormat: Text.PlainText; anchors.centerIn: parent; text: root.pageLabel(modelData); color: Theme.palette.text; font.pixelSize: Theme.typography.primaryText; font.weight: Font.Medium }
+        readonly property bool marked: !!root.marks[root.markKey(sheet, label)]
+        readonly property bool markable: !root.duplex && !root.busy
+        width: spc.implicitWidth; height: spc.implicitHeight
+        Column {
+            id: spc
+            spacing: 2
+            Row {
+                spacing: 1
+                Repeater {
+                    model: [sp.pageL, sp.pageR]
+                    Rectangle {
+                        width: 34; height: 44; radius: 2
+                        border.width: sp.marked ? 2 : 0; border.color: Theme.palette.error
+                        color: modelData === null || modelData === undefined ? Theme.palette.backgroundInset : Theme.palette.surface
+                        LogosText { textFormat: Text.PlainText; anchors.centerIn: parent; text: root.pageLabel(modelData); color: Theme.palette.text; font.pixelSize: Theme.typography.primaryText; font.weight: Font.Medium }
+                    }
                 }
             }
+            LogosText { textFormat: Text.PlainText; text: sp.marked ? "reprint" : sp.label; color: sp.marked ? Theme.palette.error : Theme.palette.textTertiary; font.pixelSize: 10; anchors.horizontalCenter: parent.horizontalCenter }
         }
-        LogosText { textFormat: Text.PlainText; text: label; color: Theme.palette.textTertiary; font.pixelSize: 10; anchors.horizontalCenter: parent.horizontalCenter }
+        MouseArea {
+            anchors.fill: parent
+            enabled: sp.markable; cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+            onClicked: root.toggleMark(sp.sheet, sp.label)
+        }
     }
 }

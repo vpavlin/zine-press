@@ -18,6 +18,7 @@ For a PDF of the zine's pages in reading order (cover first):
 | `fronts.pdf`, `backs.pdf` | printers that print one side at a time: fronts first, then the stack goes back in for the backs |
 | `batch-N-fronts.pdf`, `batch-N-backs.pdf` | the same, for several copies, a few whole copies per batch |
 | `test-sheet.pdf` | one sheet, to find out which way your printer takes the paper back in |
+| `reprint-fronts.pdf`, `reprint-backs.pdf` | after a double-feed: only the sheet sides you marked for printing again |
 | `HOW-TO-PRINT.txt` | the steps for this job |
 
 ## How a booklet is laid out
@@ -45,12 +46,28 @@ any other size is scaled to fit A5.
    isn't, turn the sheet the other way. Now you know how the whole stack goes back in.
 2. **Print the fronts.** Zine Press puts them last sheet first: most one-sided printers stack the
    output face up with the last sheet on top, so the stack comes out ready for the backs.
-3. **Let them dry**, then fan the sheets so they don't stick together.
+3. **Let the fronts dry 10-15 minutes**, then fan them well before they go back in. Fresh ink makes
+   sheets cling together: on the first five copies of the LAN zine, both double-feeds happened on the
+   backs pass, with fronts printed a few minutes earlier.
 4. **Print the backs**, with the stack back in the tray the way the test showed. The finished stack is
    in order: the cover sheet at the bottom, cover face down.
 
 Several copies: print them in **batches of 2 or 3**. A double-feed (two sheets pulled at once) shifts
-every sheet after it, and the whole batch is lost.
+every sheet after it, and the rest of the batch is printed wrong.
+
+**When a double-feed happens:**
+
+1. Cancel the job on the printer straight away.
+2. Sort the sheets into three piles: back printed correctly (done), back still blank (needs only its
+   back), back printed wrong (spoilt: needs both sides again). The page numbers on a sheet tell you
+   which sheet it is; the app's sheet plan shows them.
+3. In the app, tap those sides on the sheet plan and press **Reprint**. You get `reprint-fronts.pdf`
+   and `reprint-backs.pdf` with just those sides, in the same order as the full passes.
+4. Print the fronts and let them dry. Stack them with the blank-back sheets in sheet order, as the
+   backs pass had them, put the stack in the same way round as before and print the backs.
+
+**Out of paper in the middle of a job:** add paper, push the tray fully in and press the button the
+printer asks for (on a Brother DCP: **Mono Copy**). The job carries on where it stopped.
 
 **Settings:** A4, landscape, actual size / 100% (never "fit to page"). Quality **Normal**: Fine is much
 slower and you won't see the difference on plain paper. A borderless printer can print the pages
@@ -105,7 +122,9 @@ checks the page order against the script the LAN zine was printed with.
 
 The core's methods: `inspect(path, options)`, `make(path, options)` (returns a job id),
 `job(id)`, `defaultOutDir(path)`, `about()`. Options:
-`{scale, cut: auto|a5|none, pad, reverseFronts, copies, batch, flatten, dpi, quality, outDir}`.
+`{scale, cut: auto|a5|none, pad, reverseFronts, copies, batch, flatten, dpi, quality, outDir,
+reprint: [{sheet, side: front|back}]}`. With `reprint` set, `make` renders and writes only those sides
+(one copy) as `reprint-fronts.pdf` / `reprint-backs.pdf`.
 
 Later: a Logos Storage CID as the input, and publishing the printable set back to Storage.
 
