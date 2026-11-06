@@ -2,8 +2,10 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <initializer_list>
 #include <fstream>
 #include <pwd.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -64,6 +66,23 @@ std::string trim(std::string s) {
     return s;
 }
 
+// The first of these found on PATH (or the usual places)
+std::string findTool(std::initializer_list<const char*> names) {
+    std::string path = std::getenv("PATH") ? std::getenv("PATH") : "";
+    path += ":/usr/bin:/bin:/usr/local/bin:/run/current-system/sw/bin";
+    for (const char* n : names) {
+        size_t a = 0;
+        while (a <= path.size()) {
+            size_t b = path.find(':', a);
+            if (b == std::string::npos) b = path.size();
+            const std::string dir = path.substr(a, b - a);
+            if (!dir.empty()) { const std::string f = dir + "/" + n; if (access(f.c_str(), X_OK) == 0) return f; }
+            a = b + 1;
+        }
+    }
+    return "";
+}
+
 } // namespace
 
 ZinePressCoreImpl::~ZinePressCoreImpl() {
@@ -71,7 +90,7 @@ ZinePressCoreImpl::~ZinePressCoreImpl() {
 }
 
 std::string ZinePressCoreImpl::about() {
-    return json({{"name", "zine_press_core"}, {"version", "0.2.0"}, {"engine", "qpdf + PDFium + IPP"}}).dump();
+    return json({{"name", "zine_press_core"}, {"version", "0.2.1"}, {"engine", "qpdf + PDFium + IPP"}}).dump();
 }
 
 std::string ZinePressCoreImpl::inspect(std::string path, std::string optionsJson) {
@@ -128,6 +147,34 @@ std::string ZinePressCoreImpl::job(std::string jobId) {
     std::lock_guard<std::mutex> lk(m_mtx);
     if (!m_job || m_job->id != jobId) return json({{"ok", false}, {"error", "unknown job"}}).dump();
     return json({{"ok", true}, {"jobId", m_job->id}, {"state", m_job->state}, {"fraction", m_job->fraction}, {"step", m_job->step}, {"result", m_job->result}}).dump();
+}
+
+std::string ZinePressCoreImpl::openPath(std::string path) {
+    const std::string p = toPath(path);
+    std::error_code ec;
+    if (!fs::exists(p, ec)) return json({{"ok", false}, {"error", "no such file: " + p}}).dump();
+#ifdef __APPLE__
+    const std::string tool = findTool({"open"});
+#else
+    const std::string tool = findTool({"xdg-open", "gio", "kde-open5", "gnome-open"});
+#endif
+    if (tool.empty()) return json({{"ok", false}, {"error", "no program to open files with (xdg-open) - open " + p + " yourself"}}).dump();
+    const bool gio = tool.size() >= 4 && tool.substr(tool.size() - 4) == "/gio";
+    // double fork: the viewer is nobody's child and leaves no zombie behind
+    pid_t c = fork();
+    if (c < 0) return json({{"ok", false}, {"error", "couldn't start " + tool}}).dump();
+    if (c == 0) {
+        setsid();
+        if (fork() == 0) {
+            if (gio) execl(tool.c_str(), tool.c_str(), "open", p.c_str(), (char*)nullptr);
+            else execl(tool.c_str(), tool.c_str(), p.c_str(), (char*)nullptr);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    int st = 0;
+    waitpid(c, &st, 0);
+    return json({{"ok", true}, {"with", tool}}).dump();
 }
 
 // ── printing ──

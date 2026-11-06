@@ -79,26 +79,37 @@ print at the printer's own speed.
 
 ## Printing from the app
 
-Instead of opening the files yourself, **4. Print from here** sends them to the printer step by step:
+**4. Print, step by step** walks you through the batches. It has two modes.
 
-1. **Choose a printer**: the ones set up on this computer (CUPS), or any network printer by its
-   address, e.g. `ipp://printserver:631/printers/NAME` for a printer shared by another computer's CUPS.
-   The paper size and quality lists come from the printer itself (for a CUPS printer, from its
+**Open for printing** (the default) works with any printer your computer has, on Linux, macOS and
+Windows. Each file opens in your PDF viewer and you print it from the viewer's own print dialog.
+Those dialogs default badly for booklets, so every step says what to set:
+
+- Scale: **Actual size / 100%**, never "Fit" or "Shrink to page".
+- Paper: **A4 borderless** if the printer offers it, otherwise plain A4 with files made with
+  Borderless off (shrunk to 96%).
+- **No "reverse order"**: the order is already in the files.
+- One-sided printers: Copies 1, the copies are already in the batch files. Two-sided printers:
+  `booklet.pdf`, both sides, **flip on the short edge**, copies collated.
+
+The steps: open the fronts → print → dry 10-15 minutes (a countdown) and fan them → put the stack
+back → open the backs → print → next batch. **Something went wrong** (a double-feed): cancel the job
+in the print queue, sort the sheets of that batch (done, needs its back, both sides again), and
+Zine Press makes and opens exactly the reprints, then carries on. Sides marked on the sheet plan can
+be printed any time with **Print these**.
+
+**Send to a printer** talks to a printer Zine Press can reach directly, over IPP: one set up in this
+computer's CUPS, or a network printer by its address, e.g. `ipp://printserver:631/printers/NAME` for
+a printer shared by another computer's CUPS. It follows the job (progress, **Stop** cancels at once,
+also while it waits in the queue) and does the same drying, sorting and reprints.
+
+1. The paper size and quality lists come from the printer itself (for a CUPS printer, from its
    driver: a Brother DCP-T230 offers "A4 (Borderless)" and Print Quality Draft / Normal / Fine).
    Zine Press picks borderless A4 if there is one, Normal quality, and fit to page.
-2. **Start** sends the fronts of the first batch and shows how far the printer has got.
-3. When they're done, the app counts down **15 minutes of drying**: fan the sheets, put the stack
-   back, **Continue** sends the backs. **Next batch** starts the next one.
-4. **Stop** cancels the job at once, also if it is still waiting in the queue. Then you sort the
-   sheets of that batch, one row per sheet: done, needs its back, or both sides again. **Reprint and
-   go on** prints exactly what's missing (fronts, drying, backs) and continues with the next batch.
-5. Any time, sides marked on the sheet plan can be printed with **Print these**.
-
-A printer that prints both sides gets one step per batch: the booklet, two-sided, flip on the short
-edge, with the batch's copies collated. Its reprints use page ranges of the same booklet.
-
-If the printer runs out of paper, the app says so (from the printer's own status): add paper, push
-the tray in and press its continue button (Mono Copy on a Brother).
+2. A printer that prints both sides gets one step per batch: the booklet, two-sided, flip on the
+   short edge, with the batch's copies collated. Its reprints use page ranges of the same booklet.
+3. If the printer runs out of paper, the app says so (from the printer's own status): add paper,
+   push the tray in and press its continue button (Mono Copy on a Brother).
 
 The printer talk is plain IPP over HTTP (`zine_ipp.cpp`), with no CUPS library: it lists the local
 CUPS printers, reads a printer's attributes and its CUPS driver file (PPD), and sends

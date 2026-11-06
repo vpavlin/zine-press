@@ -128,6 +128,10 @@ Item {
         return null;
     }
     // ══ printing from here (core: printers / printerInfo / printFile / printStatus / printCancel) ══
+    // "open": each file opens in the system's PDF viewer and is printed from its own dialog (any
+    // printer the OS has); "ipp": sent straight to a printer Zine Press can reach (progress, Stop)
+    property string printMode: "open"
+    property string openNote: ""         // open mode: the viewer didn't start
     property var printerList: []         // [{uri, label, saved}]
     property string printerUri: ""
     property var printer: null           // printerInfo() of the chosen printer
@@ -234,15 +238,17 @@ Item {
     }
 
     function startRun() {
-        if (!root.result || !root.printer) return;
+        if (!root.result || (root.printMode === "ipp" && !root.printer)) return;
         root.steps = buildSteps(); root.stepIndex = 0; root.phase = "ready"; root.runNote = ""; root.sort = {};
     }
     function endRun() { printPoll.stop(); root.phase = "idle"; root.steps = []; root.stepIndex = -1; root.pstat = null; root.printId = ""; }
     function sendStep() {
-        var st = root.step; if (!st || !root.printer) return;
+        var st = root.step; if (!st) return;
         var res = st.src === "reprint" ? root.reprintResult : root.result;
         var f = fileFrom(res, st.file);
         if (!f) { root.phase = "failed"; root.runNote = "the file " + st.file + " isn't there - make the files again"; return; }
+        if (root.printMode === "open") { openStep(f); return; }
+        if (!root.printer) return;
         var o = {
             title: "Zine Press: " + stem() + " - " + stepTitle(st),
             copies: st.kind === "duplex" ? st.copies : 1, collate: true,
@@ -260,6 +266,41 @@ Item {
             root.printId = String(r.printId);
             printPoll.start();
         });
+    }
+    // open mode: the system viewer prints it; the user says when it's done
+    function openStep(f) {
+        root.openNote = "";
+        root.openedPath = f.path;
+        root.phase = "opened";
+        openInSystem(f.path, function (err) { root.openNote = "Couldn't open it (" + err + ") - open " + f.path + " yourself."; });
+    }
+    // The core opens it (xdg-open / open): the view itself can't start other programs reliably
+    function openInSystem(path, onFail) {
+        callVia("openPath", [path], function (raw) {
+            var r = parse(raw);
+            if (!r || !r.ok) onFail(r && r.error ? r.error : "no answer from zine_press_core");
+        });
+    }
+    property string openedPath: ""
+    // What to set in the viewer's print dialog: its defaults are wrong for a booklet
+    function dialogText(st) {
+        if (!st || !root.result) return "";
+        var o = root.result.options, l = ["In the print dialog:"];
+        if (st.kind === "duplex") {
+            l.push("- Two-sided: on, flip on the SHORT edge.");
+            l.push("- Copies: " + st.copies + (st.copies > 1 ? ", collated." : "."));
+        } else {
+            l.push("- One-sided. Copies: 1 - " + (st.copies > 1 ? "the " + st.copies + " copies are already in the file." : "the file is one copy."));
+        }
+        if (st.pageRanges) l.push("- Pages: " + st.pageRanges.map(function (r) { return r[0] + "-" + r[1]; }).join(", ") + " (only these).");
+        l.push("- Scale: Actual size / 100% - never \"Fit\" or \"Shrink to page\".");
+        l.push(o.scale >= 0.999
+               ? "- Paper: A4 borderless. These files go edge to edge; if your printer has no borderless A4, turn Borderless off above and make the files again."
+               : "- Paper: A4 borderless if the printer offers it, otherwise plain A4 - these files are shrunk to 96% so the margin doesn't cut them.");
+        l.push("- Landscape (the viewer usually picks it from the file).");
+        if (st.kind !== "duplex") l.push("- No \"reverse order\" / \"print in reverse\": the order is already in the file.");
+        l.push("- Quality: Normal.");
+        return l.join("\n");
     }
     Timer {
         id: printPoll
@@ -494,7 +535,7 @@ Item {
                     RowLayout {
                         spacing: Theme.spacing.medium
                         LogosButton { text: root.busy ? "Making..." : "Make the files"; enabled: !!root.info && !root.busy; onClicked: root.makeNow() }
-                        LogosButton { visible: !!root.result; text: "Open the folder"; onClicked: Qt.openUrlExternally(root.folderUrl(root.result.outDir)) }
+                        LogosButton { visible: !!root.result; text: "Open the folder"; onClicked: root.openInSystem(root.result.outDir, function (e) { root.error = e; }) }
                     }
                     ProgressBar {
                         visible: root.busy; Layout.fillWidth: true; from: 0; to: 1; value: root.job ? root.job.fraction : 0
@@ -515,9 +556,18 @@ Item {
 
                 // 4. print from here
                 Card {
-                    title: "4. Print from here"
-                    Hint { text: "Or print the files yourself - everything above works without this." }
+                    title: "4. Print, step by step"
+                    Chips {
+                        enabled: root.phase === "idle" || root.phase === "done"
+                        model: [{ k: "open", t: "open for printing" }, { k: "ipp", t: "send to a printer" }]
+                        current: root.printMode
+                        onPicked: function (k) { root.printMode = k }
+                    }
+                    Hint { text: root.printMode === "open"
+                                 ? "Each file opens in your PDF viewer; print it from there with any printer your computer has. Zine Press tells you what to set and walks you through the batches."
+                                 : "Zine Press sends the files straight to a printer it can reach (one set up on this computer, or a network printer by its address) and follows the job: progress, Stop, reprints." }
                     RowLayout {
+                        visible: root.printMode === "ipp"
                         Layout.fillWidth: true
                         spacing: Theme.spacing.small
                         ComboBox {
@@ -533,6 +583,7 @@ Item {
                         SmallButton { text: "\u21bb"; onClicked: root.loadPrinters() }
                     }
                     RowLayout {
+                        visible: root.printMode === "ipp"
                         Layout.fillWidth: true
                         spacing: Theme.spacing.small
                         Rectangle {
@@ -549,12 +600,12 @@ Item {
                         }
                         LogosButton { text: "Add"; enabled: !root.printerBusy && uriField.text.length > 0; onClicked: root.addPrinter(uriField.text) }
                     }
-                    LogosText { textFormat: Text.PlainText; visible: root.printerBusy; text: "Asking the printer..."; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
-                    LogosText { textFormat: Text.PlainText; visible: root.printerError !== ""; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap; text: root.printerError; color: Theme.palette.error; font.pixelSize: Theme.typography.secondaryText }
+                    LogosText { textFormat: Text.PlainText; visible: root.printMode === "ipp" && root.printerBusy; text: "Asking the printer..."; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
+                    LogosText { textFormat: Text.PlainText; visible: root.printMode === "ipp" && root.printerError !== ""; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap; text: root.printerError; color: Theme.palette.error; font.pixelSize: Theme.typography.secondaryText }
 
                     // the chosen printer's own choices
                     ColumnLayout {
-                        visible: !!root.printer
+                        visible: root.printMode === "ipp" && !!root.printer
                         Layout.fillWidth: true
                         spacing: Theme.spacing.small
                         RowLayout {
@@ -594,7 +645,7 @@ Item {
 
                     // the run
                     ColumnLayout {
-                        visible: !!root.printer
+                        visible: root.printMode === "open" || !!root.printer
                         Layout.fillWidth: true
                         spacing: Theme.spacing.small
                         LogosText { textFormat: Text.PlainText; visible: !root.result && root.phase === "idle"; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
@@ -608,7 +659,26 @@ Item {
                         RowLayout {
                             visible: root.phase === "ready"
                             spacing: Theme.spacing.medium
-                            LogosButton { text: root.step && root.step.batch > 1 && root.step.kind !== "backs" && !root.step.reprint ? "Next batch" : "Start"; onClicked: root.sendStep() }
+                            LogosButton { text: root.step && root.step.batch > 1 && root.step.kind !== "backs" && !root.step.reprint ? "Next batch" : (root.printMode === "open" ? "Open " + (root.step ? root.step.file : "") : "Start"); onClicked: root.sendStep() }
+                            LogosButton { text: "End"; onClicked: root.endRun() }
+                        }
+
+                        // open mode: the file is in the viewer
+                        LogosText { textFormat: Text.PlainText; visible: root.phase === "opened"; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
+                            text: root.stepHow(root.step) + "\n\n" + root.dialogText(root.step)
+                            color: Theme.palette.text; font.pixelSize: Theme.typography.primaryText }
+                        LogosText { textFormat: Text.PlainText; visible: root.phase === "opened" && root.openNote !== ""; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
+                            text: root.openNote; color: Theme.palette.error; font.pixelSize: Theme.typography.secondaryText }
+                        RowLayout {
+                            visible: root.phase === "opened"
+                            spacing: Theme.spacing.medium
+                            LogosButton { text: "Printed - next"; onClicked: root.stepDone() }
+                            LogosButton { text: "Open again"; onClicked: root.sendStep() }
+                        }
+                        RowLayout {
+                            visible: root.phase === "opened"
+                            spacing: Theme.spacing.medium
+                            LogosButton { text: "Something went wrong"; onClicked: root.toStopped() }
                             LogosButton { text: "End"; onClicked: root.endRun() }
                         }
 
@@ -646,8 +716,8 @@ Item {
                         // stopped: sort the sheets
                         LogosText { textFormat: Text.PlainText; visible: root.phase === "stopped"; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
                             text: root.step && root.step.kind === "duplex"
-                                  ? "Stopped. Take the sheets out and mark the ones to print again; the rest are done."
-                                  : "Stopped. Take the sheets out (and the ones still in the tray) and sort them: done (both sides right), needs its back (front right, back blank), or both sides again (spoiled or never printed). The page numbers tell you which sheet is which."
+                                  ? (root.printMode === "open" ? "Cancel the job in the print queue (or on the printer) first. Then take" : "Stopped. Take") + " the sheets out and mark the ones to print again; the rest are done."
+                                  : (root.printMode === "open" ? "Cancel the job in the print queue (or on the printer) first. Then take" : "Stopped. Take") + " the sheets out (and the ones still in the tray) and sort them: done (both sides right), needs its back (front right, back blank), or both sides again (spoiled or never printed). The page numbers tell you which sheet is which."
                             color: Theme.palette.text; font.pixelSize: Theme.typography.primaryText }
                         Repeater {
                             model: root.sortRows
@@ -735,7 +805,7 @@ Item {
                 LogosText { textFormat: Text.PlainText;
                     Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
                     text: root.markCount === 0
-                          ? "Two sheets went through at once? Tap the sides that need printing again (a blank back, or both sides of a spoilt sheet)" + (root.printer ? ", then Print these." : ", then make the reprint files.")
+                          ? "Two sheets went through at once? Tap the sides that need printing again (a blank back, or both sides of a spoilt sheet)" + ", then Print these."
                           : root.markCount + " side" + (root.markCount > 1 ? "s" : "") + " marked for reprinting."
                     color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText
                 }
@@ -743,7 +813,7 @@ Item {
                     visible: root.markCount > 0
                     spacing: Theme.spacing.medium
                     LogosButton { text: root.busy ? "Making..." : "Make the reprint files"; enabled: !root.busy; onClicked: root.reprintNow() }
-                    LogosButton { visible: !!root.printer && (root.phase === "idle" || root.phase === "ready" || root.phase === "done"); text: "Print these"; enabled: !root.busy; onClicked: root.printMarked() }
+                    LogosButton { visible: (root.printMode === "open" || !!root.printer) && (root.phase === "idle" || root.phase === "ready" || root.phase === "done"); text: "Print these"; enabled: !root.busy; onClicked: root.printMarked() }
                     LogosButton { text: "Clear"; enabled: !root.busy; onClicked: { root.marks = {}; root.reprintResult = null } }
                 }
                 Repeater {
@@ -755,7 +825,7 @@ Item {
                         LogosText { textFormat: Text.PlainText; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap; text: modelData.what + " - " + root.mb(modelData.bytes); color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
                     }
                 }
-                LogosButton { visible: !!root.reprintResult; text: "Open the folder"; onClicked: Qt.openUrlExternally(root.folderUrl(root.reprintResult.outDir)) }
+                LogosButton { visible: !!root.reprintResult; text: "Open the folder"; onClicked: root.openInSystem(root.reprintResult.outDir, function (e) { root.error = e; }) }
             }
 
             RowLayout {

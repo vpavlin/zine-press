@@ -30,6 +30,9 @@ public:
     // The folder a booklet of this PDF goes to by default
     std::string defaultOutDir(std::string path);
 
+    // Open a file or folder in the system's default app (xdg-open / open), detached: {ok, error}
+    std::string openPath(std::string path);
+
     // ── printing (IPP; see zine_ipp.hpp) ──
     // {ok, local:[{uri,name,info,makeModel,state}], saved:[{uri,name}], last, localError}
     std::string printers();
