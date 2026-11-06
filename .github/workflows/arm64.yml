@@ -59,8 +59,10 @@ jobs:
           # checked by running under QEMU's cortex-a53 before a release
           [ "$n" = 0 ] || { echo "the plugin would SIGILL on ARMv8.0"; exit 1; }
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65   # v2
-        if: startsWith(github.ref, 'refs/tags/')
+        # always: a failed build's logs land on the release too (readable without a GitHub login)
+        if: always() && startsWith(github.ref, 'refs/tags/')
         with:
+          fail_on_unmatched_files: false
           files: |
             out/*.lgx
             logs/*.log
