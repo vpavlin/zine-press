@@ -145,7 +145,7 @@ off and press the legs flat by hand.
 
 ## Building
 
-Two Basecamp modules, built with logos-module-builder 0.3.1 (each from its own flake):
+Two Basecamp modules, built with logos-module-builder 0.3.3, the one that matches Basecamp 0.3.2 (each from its own flake):
 
 ```sh
 nix build ./zine_press_core#lgx-portable   # the core: qpdf + PDFium + libjpeg, bundled

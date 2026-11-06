@@ -90,7 +90,7 @@ ZinePressCoreImpl::~ZinePressCoreImpl() {
 }
 
 std::string ZinePressCoreImpl::about() {
-    return json({{"name", "zine_press_core"}, {"version", "0.2.1"}, {"engine", "qpdf + PDFium + IPP"}}).dump();
+    return json({{"name", "zine_press_core"}, {"version", "0.2.2"}, {"engine", "qpdf + PDFium + IPP"}}).dump();
 }
 
 std::string ZinePressCoreImpl::inspect(std::string path, std::string optionsJson) {
