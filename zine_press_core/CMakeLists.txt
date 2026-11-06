@@ -30,9 +30,12 @@ logos_module(
 )
 
 # pdfium-binaries' macOS library names itself "./libpdfium.dylib", which the linker copies into the
-# plugin's load commands: point it at the bundled copy next to the plugin instead
+# plugin's load commands. Point it at the library's absolute store path: the portable bundler then
+# copies it next to the plugin and rewrites the reference to @loader_path (it only bundles absolute
+# /nix/store references; an @rpath one was left out, 0.1.1).
 if(APPLE)
+    get_filename_component(PDFIUM_LIBRARY_REAL "${PDFIUM_LIBRARY}" REALPATH)
     add_custom_command(TARGET ${MODULE_NAME}_module_plugin POST_BUILD
-        COMMAND install_name_tool -change ./libpdfium.dylib @rpath/libpdfium.dylib $<TARGET_FILE:${MODULE_NAME}_module_plugin>
+        COMMAND install_name_tool -change ./libpdfium.dylib "${PDFIUM_LIBRARY_REAL}" $<TARGET_FILE:${MODULE_NAME}_module_plugin>
         VERBATIM)
 endif()
