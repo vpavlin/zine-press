@@ -28,3 +28,11 @@ logos_module(
     FIND_PACKAGES qpdf JPEG
     LINK_LIBRARIES qpdf::libqpdf JPEG::JPEG ${PDFIUM_LIBRARY}
 )
+
+# pdfium-binaries' macOS library names itself "./libpdfium.dylib", which the linker copies into the
+# plugin's load commands: point it at the bundled copy next to the plugin instead
+if(APPLE)
+    add_custom_command(TARGET ${MODULE_NAME}_module_plugin POST_BUILD
+        COMMAND install_name_tool -change ./libpdfium.dylib @rpath/libpdfium.dylib $<TARGET_FILE:${MODULE_NAME}_module_plugin>
+        VERBATIM)
+endif()
