@@ -229,8 +229,7 @@ Options parseOptions(const std::string& text) {
             const int sheet = r["sheet"].get<int>() - 1;
             const std::string side = r.value("side", "");
             if (sheet < 0 || (side != "front" && side != "back")) continue;
-            std::pair<int, bool> k{sheet, side == "back"};
-            if (std::find(o.reprint.begin(), o.reprint.end(), k) == o.reprint.end()) o.reprint.push_back(k);
+            o.reprint.push_back({sheet, side == "back"});   // repeats allowed: the same sheet of two copies
         }
     return o;
 }
@@ -299,7 +298,12 @@ json make(const std::string& path, const std::string& outDir, const Options& o, 
         std::sort(rBacks.begin(), rBacks.end());
         if (o.reverseFronts) std::reverse(rFronts.begin(), rFronts.end());
         std::vector<int> need;   // side indices to render
-        if (reprinting) { for (int f : rFronts) need.push_back(2 * f); for (int b : rBacks) need.push_back(2 * b + 1); }
+        if (reprinting) {
+            for (int f : rFronts) need.push_back(2 * f);
+            for (int b : rBacks) need.push_back(2 * b + 1);
+            std::sort(need.begin(), need.end());
+            need.erase(std::unique(need.begin(), need.end()), need.end());   // render each side once
+        }
         else for (int i = 0; i < 2 * S; i++) need.push_back(i);
 
         // flatten: render each side once, reuse the JPEG in every file

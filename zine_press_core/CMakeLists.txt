@@ -24,6 +24,9 @@ logos_module(
         src/zine_plan.hpp
         src/zine_pdf.hpp
         src/zine_pdf.cpp
+        src/zine_ipp.hpp
+        src/zine_ipp.cpp
+        src/zine_print.hpp
     INCLUDE_DIRS src ${PDFIUM_INCLUDE_DIR}
     FIND_PACKAGES qpdf JPEG
     LINK_LIBRARIES qpdf::libqpdf JPEG::JPEG ${PDFIUM_LIBRARY}

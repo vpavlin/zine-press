@@ -27,7 +27,8 @@ struct Options {
     int dpi = 300;
     int quality = 85;             // JPEG quality when flattening
     // Reprint only these sheet sides (0-based sheet, back?) after a double-feed: make() then writes
-    // just reprint-fronts.pdf / reprint-backs.pdf, one copy, in the same order as the full passes
+    // just reprint-fronts.pdf / reprint-backs.pdf in the same order as the full passes. A sheet side
+    // listed twice is printed twice (that sheet of two copies in a batch).
     std::vector<std::pair<int, bool>> reprint;
 };
 Options parseOptions(const std::string& optionsJson);

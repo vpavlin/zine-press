@@ -77,6 +77,35 @@ full size (Borderless on); otherwise they are shrunk to 96% so the margin doesn'
 detailed artwork took minutes per sheet in the printer driver; flattened, the files are a few MB and
 print at the printer's own speed.
 
+## Printing from the app
+
+Instead of opening the files yourself, **4. Print from here** sends them to the printer step by step:
+
+1. **Choose a printer**: the ones set up on this computer (CUPS), or any network printer by its
+   address, e.g. `ipp://printserver:631/printers/NAME` for a printer shared by another computer's CUPS.
+   The paper size and quality lists come from the printer itself (for a CUPS printer, from its
+   driver: a Brother DCP-T230 offers "A4 (Borderless)" and Print Quality Draft / Normal / Fine).
+   Zine Press picks borderless A4 if there is one, Normal quality, and fit to page.
+2. **Start** sends the fronts of the first batch and shows how far the printer has got.
+3. When they're done, the app counts down **15 minutes of drying**: fan the sheets, put the stack
+   back, **Continue** sends the backs. **Next batch** starts the next one.
+4. **Stop** cancels the job at once, also if it is still waiting in the queue. Then you sort the
+   sheets of that batch, one row per sheet: done, needs its back, or both sides again. **Reprint and
+   go on** prints exactly what's missing (fronts, drying, backs) and continues with the next batch.
+5. Any time, sides marked on the sheet plan can be printed with **Print these**.
+
+A printer that prints both sides gets one step per batch: the booklet, two-sided, flip on the short
+edge, with the batch's copies collated. Its reprints use page ranges of the same booklet.
+
+If the printer runs out of paper, the app says so (from the printer's own status): add paper, push
+the tray in and press its continue button (Mono Copy on a Brother).
+
+The printer talk is plain IPP over HTTP (`zine_ipp.cpp`), with no CUPS library: it lists the local
+CUPS printers, reads a printer's attributes and its CUPS driver file (PPD), and sends
+Print-Job / Get-Job-Attributes / Cancel-Job. Driver options go out the way `lp -o PageSize=A4_B
+-o BRResolution=Normal -o fit-to-page` sends them. Encrypted `ipps://` and printers that ask for a
+password aren't supported yet. Remembered printers are kept in `~/.config/zine-press/printers.json`.
+
 ## Fold and bind
 
 Fold each sheet on its own, crease it, and nest them in order, sheet 1 on the outside.
@@ -121,7 +150,9 @@ two up on A4. Flattening renders each sheet side once with PDFium (BSD-3) and st
 checks the page order against the script the LAN zine was printed with.
 
 The core's methods: `inspect(path, options)`, `make(path, options)` (returns a job id),
-`job(id)`, `defaultOutDir(path)`, `about()`. Options:
+`job(id)`, `defaultOutDir(path)`, `about()`, and for printing `printers()`, `addPrinter(uri)`,
+`forgetPrinter(uri)`, `printerInfo(uri)`, `printFile(uri, path, jobOptions)`, `printStatus(id)`,
+`printCancel(id)`. Options:
 `{scale, cut: auto|a5|none, pad, reverseFronts, copies, batch, flatten, dpi, quality, outDir,
 reprint: [{sheet, side: front|back}]}`. With `reprint` set, `make` renders and writes only those sides
 (one copy) as `reprint-fronts.pdf` / `reprint-backs.pdf`.

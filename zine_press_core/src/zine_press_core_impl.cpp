@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <pwd.h>
 #include <unistd.h>
 
@@ -37,6 +38,32 @@ bool writableDir(const fs::path& d) {
     return access(d.c_str(), W_OK) == 0;
 }
 
+// Remembered printers: $XDG_CONFIG_HOME/zine-press/printers.json (~/.config/... by default)
+fs::path configFile() {
+    const char* x = std::getenv("XDG_CONFIG_HOME");
+    fs::path base = x && *x ? fs::path(x) : fs::path(homeDir()) / ".config";
+    return base / "zine-press" / "printers.json";
+}
+json loadConfig() {
+    std::ifstream f(configFile());
+    json j = json::parse(f, nullptr, false);
+    if (!j.is_object()) j = json::object();
+    if (!j.contains("saved") || !j["saved"].is_array()) j["saved"] = json::array();
+    return j;
+}
+void saveConfig(const json& j) {
+    std::error_code ec;
+    fs::create_directories(configFile().parent_path(), ec);
+    const fs::path tmp = configFile().string() + ".tmp";
+    { std::ofstream f(tmp); f << j.dump(2); }
+    fs::rename(tmp, configFile(), ec);
+}
+std::string trim(std::string s) {
+    s.erase(0, s.find_first_not_of(" \t\r\n"));
+    while (!s.empty() && std::isspace((unsigned char)s.back())) s.pop_back();
+    return s;
+}
+
 } // namespace
 
 ZinePressCoreImpl::~ZinePressCoreImpl() {
@@ -44,7 +71,7 @@ ZinePressCoreImpl::~ZinePressCoreImpl() {
 }
 
 std::string ZinePressCoreImpl::about() {
-    return json({{"name", "zine_press_core"}, {"version", "0.1.3"}, {"engine", "qpdf + PDFium"}}).dump();
+    return json({{"name", "zine_press_core"}, {"version", "0.2.0"}, {"engine", "qpdf + PDFium + IPP"}}).dump();
 }
 
 std::string ZinePressCoreImpl::inspect(std::string path, std::string optionsJson) {
@@ -101,4 +128,67 @@ std::string ZinePressCoreImpl::job(std::string jobId) {
     std::lock_guard<std::mutex> lk(m_mtx);
     if (!m_job || m_job->id != jobId) return json({{"ok", false}, {"error", "unknown job"}}).dump();
     return json({{"ok", true}, {"jobId", m_job->id}, {"state", m_job->state}, {"fraction", m_job->fraction}, {"step", m_job->step}, {"result", m_job->result}}).dump();
+}
+
+// ── printing ──
+
+std::string ZinePressCoreImpl::printers() {
+    json local = zine::ipp::localPrinters(4000);
+    std::lock_guard<std::mutex> lk(m_cfgMtx);
+    json cfg = loadConfig();
+    return json({{"ok", true}, {"local", local.value("printers", json::array())}, {"localError", local.value("error", "")},
+                 {"saved", cfg["saved"]}, {"last", cfg.value("last", "")}}).dump();
+}
+
+std::string ZinePressCoreImpl::addPrinter(std::string uri) {
+    uri = trim(uri);
+    if (uri.rfind("ipps://", 0) == 0) return json({{"ok", false}, {"error", "ipps:// (encrypted) isn't supported yet - use the ipp:// address"}}).dump();
+    if (uri.find("://") == std::string::npos) uri = "ipp://" + uri;
+    json info = zine::ipp::printerInfo(uri, true, 8000);
+    if (!info.value("ok", false)) return info.dump();
+    std::lock_guard<std::mutex> lk(m_cfgMtx);
+    json cfg = loadConfig();
+    json saved = json::array();
+    for (const auto& p : cfg["saved"]) if (p.value("uri", "") != uri) saved.push_back(p);
+    saved.push_back({{"uri", uri}, {"name", info.value("name", uri)}, {"makeModel", info.value("makeModel", "")}});
+    cfg["saved"] = saved; cfg["last"] = uri;
+    saveConfig(cfg);
+    return info.dump();
+}
+
+std::string ZinePressCoreImpl::forgetPrinter(std::string uri) {
+    std::lock_guard<std::mutex> lk(m_cfgMtx);
+    json cfg = loadConfig();
+    json saved = json::array();
+    for (const auto& p : cfg["saved"]) if (p.value("uri", "") != uri) saved.push_back(p);
+    cfg["saved"] = saved;
+    if (cfg.value("last", "") == uri) cfg["last"] = "";
+    saveConfig(cfg);
+    return json({{"ok", true}}).dump();
+}
+
+std::string ZinePressCoreImpl::printerInfo(std::string uri) {
+    json info = zine::ipp::printerInfo(trim(uri), true, 8000);
+    if (info.value("ok", false)) {
+        std::lock_guard<std::mutex> lk(m_cfgMtx);
+        json cfg = loadConfig();
+        if (cfg.value("last", "") != uri) { cfg["last"] = uri; saveConfig(cfg); }
+    }
+    return info.dump();
+}
+
+std::string ZinePressCoreImpl::printFile(std::string uri, std::string path, std::string jobOptionsJson) {
+    const std::string p = toPath(path);
+    if (!fs::is_regular_file(p)) return json({{"ok", false}, {"error", "no such file: " + p}}).dump();
+    json o = json::parse(jobOptionsJson.empty() ? "{}" : jobOptionsJson, nullptr, false);
+    if (!o.is_object()) return json({{"ok", false}, {"error", "bad print options"}}).dump();
+    return m_prints.start(trim(uri), p, o).dump();
+}
+
+std::string ZinePressCoreImpl::printStatus(std::string printId) {
+    return m_prints.status(std::atoi(printId.c_str())).dump();
+}
+
+std::string ZinePressCoreImpl::printCancel(std::string printId) {
+    return m_prints.cancel(std::atoi(printId.c_str())).dump();
 }
