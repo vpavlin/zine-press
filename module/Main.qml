@@ -121,6 +121,8 @@ Item {
     }
     // options that change the sheet plan: ask again
     onCutChanged: { root.marks = {}; root.reprintResult = null; inspectNow() }
+    // the cut description depends on borderless (the bleed is kept past the paper edge)
+    onBorderlessChanged: inspectNow()
 
     function fileNamed(n) {
         if (!root.result || !root.result.files) return null;
@@ -174,7 +176,7 @@ Item {
             var r = parse(raw);
             if (!r || !r.ok) { root.printerError = r && r.error ? r.error : "the printer didn't answer"; return; }
             root.printer = r;
-            root.sizeIndex = indexOfKey(r.sizes, r.defaultSize);
+            root.sizeIndex = pickSize(r);
             root.qualityIndex = indexOfKey(r.qualities, r.defaultQuality);
         });
     }
@@ -186,7 +188,7 @@ Item {
             var r = parse(raw);
             if (!r || !r.ok) { root.printerError = r && r.error ? r.error : "the printer didn't answer"; return; }
             root.printerUri = r.uri; root.printer = r; uriField.text = "";
-            root.sizeIndex = indexOfKey(r.sizes, r.defaultSize);
+            root.sizeIndex = pickSize(r);
             root.qualityIndex = indexOfKey(r.qualities, r.defaultQuality);
             loadPrinters();
         });
@@ -194,6 +196,17 @@ Item {
     function forgetPrinter() {
         callVia("forgetPrinter", [root.printerUri], function () { root.printerUri = ""; root.printer = null; loadPrinters(); });
     }
+    // A4 to match the files: borderless paper only for files made borderless (100%). Files shrunk
+    // to 96% on borderless paper come out with a white frame.
+    readonly property bool filesBorderless: root.result ? root.result.options.scale >= 0.999 : root.borderless
+    function pickSize(r) {
+        if (!r || !r.sizes) return -1;
+        for (var i = 0; i < r.sizes.length; i++) if (r.sizes[i].a4 && r.sizes[i].borderless === root.filesBorderless) return i;
+        for (i = 0; i < r.sizes.length; i++) if (r.sizes[i].a4) return i;
+        return indexOfKey(r.sizes, r.defaultSize);
+    }
+    onFilesBorderlessChanged: if (root.printer && root.phase === "idle") root.sizeIndex = pickSize(root.printer)
+    readonly property var chosenSize: root.printer && root.sizeIndex >= 0 ? root.printer.sizes[root.sizeIndex] : null
     function indexOfKey(list, key) {
         for (var i = 0; list && i < list.length; i++) if (list[i].key === key) return i;
         return list && list.length ? 0 : -1;
@@ -640,6 +653,10 @@ Item {
                         }
                         Toggle { text: "Fit to page"; checked: root.fitToPage; onToggled: function (v) { root.fitToPage = v } }
                         Hint { visible: !!root.printer && !root.printer.pdf; text: "This printer doesn't say it takes PDF files - printing may fail." }
+                        Hint { visible: !!root.chosenSize && root.chosenSize.borderless && !root.filesBorderless
+                               text: "Borderless paper, but the files are shrunk to 96% for a printer with margins: they will print with a white frame. Turn on Borderless A4 (2) and make the files again to print edge to edge." }
+                        Hint { visible: !!root.chosenSize && !root.chosenSize.borderless && root.filesBorderless && !root.fitToPage
+                               text: "The files are borderless but the paper isn't: the printer's margin will cut the edges. Pick the borderless A4 size or turn on Fit to page." }
                         Hint { visible: !!root.printer && root.duplex && !root.printer.duplex; text: "This printer can't print both sides: choose \"one side at a time\" above and make the files again." }
                     }
 

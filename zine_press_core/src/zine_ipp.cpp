@@ -119,7 +119,7 @@ int openTo(const Target& t, int ms, std::string* err) {
         ::close(fd); fd = -1;
     }
     freeaddrinfo(res);
-    if (fd < 0) *err = "can't connect to " + t.host + ":" + port + (isLocal(t.host) ? " - is CUPS running on this computer?" : " - is the printer (or its server) on and reachable?");
+    if (fd < 0) *err = "can't connect to " + t.host + ":" + port + (isLocal(t.host) && t.port == 631 ? " - is CUPS running on this computer?" : " - is the printer (or its server) on and reachable?");
     return fd;
 }
 

@@ -70,7 +70,7 @@ QPDFObjectHandle::Rectangle contentBox(QPDFPageObjectHelper& ph, const Options& 
         }
     }
     Fit f = guessFit(g.wMm, g.hMm);
-    if (f.kind == "a5-bleed") { if (how) *how = "centred A5 (bleed and crop marks cut off)"; return centredA5(); }
+    if (f.kind == "a5-bleed") { if (how) *how = o.scale >= 0.999 ? "centred A5 (bleed kept past the paper edge, crop marks off the page)" : "centred A5 (bleed and crop marks cut off)"; return centredA5(); }
     if (how) *how = f.kind == "a5" ? "whole page (A5)" : "whole page, scaled to fit A5";
     return g.vis;
 }
@@ -80,6 +80,8 @@ struct Source {
     QPDF pdf;
     std::vector<QPDFPageObjectHelper> pages;
     std::vector<QPDFObjectHandle> forms;   // lazily made
+    std::vector<QPDFObjectHandle::Rectangle> trims, viss;
+    std::vector<bool> rotated;
     Options o;
     explicit Source(const std::string& path, const Options& opt) : o(opt) {
         pdf.processFile(path.c_str());
@@ -87,10 +89,15 @@ struct Source {
         dh.pushInheritedAttributesToPage();
         pages = dh.getAllPages();
         forms.resize(pages.size());
+        trims.resize(pages.size());
+        viss.resize(pages.size());
+        rotated.resize(pages.size());
     }
     QPDFObjectHandle form(int i) {
         if (!forms[i].isInitialized() || forms[i].isNull()) {
             auto box = contentBox(pages[i], o);
+            PageGeom g = geomOf(pages[i]);
+            trims[i] = box; viss[i] = g.vis; rotated[i] = g.rot != 0;
             // getFormXObjectForPage uses the TrimBox for the rotation matrix; the BBox clips the rest
             pages[i].getObjectHandle().replaceKey("/TrimBox", rectArray(box));
             QPDFObjectHandle fo = pages[i].getFormXObjectForPage(true);
@@ -98,6 +105,19 @@ struct Source {
             forms[i] = fo;
         }
         return forms[i];
+    }
+    // What a page shows in its slot: the A5 trim, plus the page's bleed on the OUTER edges (top,
+    // bottom, and the sheet's outside edge) - never at the spine, where it would cover the facing
+    // page. Borderless printing then ends in the bleed instead of a white line, and the paper's edge
+    // cuts the bleed and crop marks off. Files for a printer with margins (scale < 1) and rotated
+    // pages keep the plain trim.
+    QPDFObjectHandle::Rectangle shown(int i, int slot) {
+        const auto& t = trims[i]; const auto& v = viss[i];
+        // only for borderless files: at 96% the bleed and its crop marks would land on the paper
+        if (rotated[i] || o.scale < 0.999) return t;
+        if (std::fabs(t.llx - v.llx) < 0.5 && std::fabs(t.lly - v.lly) < 0.5 && std::fabs(t.urx - v.urx) < 0.5 && std::fabs(t.ury - v.ury) < 0.5) return t;
+        return QPDFObjectHandle::Rectangle(slot == 0 ? std::min(v.llx, t.llx) : t.llx, std::min(v.lly, t.lly),
+                                           slot == 1 ? std::max(v.urx, t.urx) : t.urx, std::max(v.ury, t.ury));
     }
 };
 
@@ -128,7 +148,11 @@ void addVectorSide(QPDF& out, Source& src, const Side& side) {
         QPDFObjectHandle fo = out.copyForeignObject(src.form(slots[s]));
         const std::string name = "/P" + std::to_string(s);
         page.getKey("/Resources").getKey("/XObject").replaceKey(name, fo);
-        content += "q\n" + ph.placeFormXObject(fo, name, slotRect(s, src.o.scale), true, true, true) + "Q\n";
+        // place by the trim (the A5 page fills its slot), then let it show the outer bleed
+        fo.getDict().replaceKey("/BBox", rectArray(src.trims[slots[s]]));
+        const std::string placed = ph.placeFormXObject(fo, name, slotRect(s, src.o.scale), true, true, true);
+        fo.getDict().replaceKey("/BBox", rectArray(src.shown(slots[s], s)));
+        content += "q\n" + placed + "Q\n";
     }
     page.replaceKey("/Contents", QPDFObjectHandle::newStream(&out, content));
     QPDFPageDocumentHelper(out).addPage(ph, false);
