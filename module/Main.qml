@@ -34,8 +34,11 @@ Item {
     property int batch: 2
 
     function options() {
+        // one side at a time: the files hold ONE copy and the run prints it copy by copy, checking each
+        // (a wrong reload then spoils one copy, not several - Václav, 2026-11-13)
         return { scale: root.borderless ? 1.0 : 0.96, cut: root.cut, pad: true, reverseFronts: root.reverseFronts,
-                 copies: root.copies, batch: root.batch, flatten: root.flatten, dpi: 300, outDir: root.outDir };
+                 copies: root.duplex ? root.copies : 1, batch: root.duplex ? root.batch : 1,
+                 flatten: root.flatten, dpi: 300, outDir: root.outDir };
     }
 
     // ── core plumbing (async only: a blocking call would freeze the view) ──
@@ -141,16 +144,18 @@ Item {
     property bool printerBusy: false
     property int sizeIndex: -1
     property int qualityIndex: -1
-    property bool fitToPage: true
-    property int dryMinutes: 15
-    // the run: steps [{kind: fronts|backs|duplex, batch, copies, file, sheets, label, pageRanges}]
+    // actual size: fit-to-page squashes the page (and some queues fit by default)
+    property bool fitToPage: false
+    // the run: steps [{kind: fronts|backs|duplex, copy, of, copies, file, sheets, pageRanges, single}]
     property var steps: []
     property int stepIndex: -1
-    property string phase: "idle"        // idle | ready | printing | dry | stopped | failed | done
+    // idle | ready | printing | opened | reload (fronts out: put the stack back) | check (backs out:
+    // look at the cover sheet) | stopped | failed | done
+    property string phase: "idle"
+    property var lastStep: null          // the step that just finished (for the reload / check texts)
+    property int oneSheet: 1             // "reprint one sheet": which sheet
     property string printId: ""
     property var pstat: null             // printStatus() of the step being printed
-    property double dryEnd: 0
-    property double now: Date.now()
     property var sort: ({})              // after Stop: "copy-sheet" -> ok | back | both (one side) / ok | again (both sides)
     property bool reprintPending: false  // make(reprint) running for the run
     property string runNote: ""
@@ -196,16 +201,13 @@ Item {
     function forgetPrinter() {
         callVia("forgetPrinter", [root.printerUri], function () { root.printerUri = ""; root.printer = null; loadPrinters(); });
     }
-    // A4 to match the files: borderless paper only for files made borderless (100%). Files shrunk
-    // to 96% on borderless paper come out with a white frame.
+    // Paper: plain A4 (the core's pick). Borderless only when chosen by hand: on a Brother DCP-T230 it
+    // is the printer's own borderless mode, slow and heavy on ink even at Normal (2026-11-13).
     readonly property bool filesBorderless: root.result ? root.result.options.scale >= 0.999 : root.borderless
     function pickSize(r) {
         if (!r || !r.sizes) return -1;
-        for (var i = 0; i < r.sizes.length; i++) if (r.sizes[i].a4 && r.sizes[i].borderless === root.filesBorderless) return i;
-        for (i = 0; i < r.sizes.length; i++) if (r.sizes[i].a4) return i;
         return indexOfKey(r.sizes, r.defaultSize);
     }
-    onFilesBorderlessChanged: if (root.printer && root.phase === "idle") root.sizeIndex = pickSize(root.printer)
     readonly property var chosenSize: root.printer && root.sizeIndex >= 0 ? root.printer.sizes[root.sizeIndex] : null
     function indexOfKey(list, key) {
         for (var i = 0; list && i < list.length; i++) if (list[i].key === key) return i;
@@ -219,39 +221,80 @@ Item {
         for (var i = 0; i < res.files.length; i++) if (res.files[i].name === name) return res.files[i];
         return null;
     }
-    // The run from the made files: per batch, fronts -> dry -> backs (one side) or one step (both sides)
+    // The run from the made files. Both sides: one step per batch. One side: ONE COPY AT A TIME -
+    // its fronts, a stop to put the stack back, its backs, a stop to check the cover sheet, then the
+    // next copy. Never several copies' fronts or backs in one go.
     function buildSteps() {
         var r = root.result, o = r.options, S = r.sheets, l = [];
-        var nb = Math.ceil(o.copies / o.batch);
-        for (var b = 0; b < nb; b++) {
-            var c = Math.min(o.batch, o.copies - b * o.batch);
-            if (root.duplex) {
+        if (root.duplex) {
+            var nb = Math.ceil(o.copies / o.batch);
+            for (var b = 0; b < nb; b++) {
+                var c = Math.min(o.batch, o.copies - b * o.batch);
                 l.push({ kind: "duplex", batch: b + 1, batches: nb, copies: c, file: "booklet.pdf", sheets: S * c });
-            } else {
-                var pre = nb === 1 ? "" : "batch-" + (b + 1) + "-";
-                l.push({ kind: "fronts", batch: b + 1, batches: nb, copies: c, file: pre + "fronts.pdf", sheets: S * c });
-                l.push({ kind: "backs", batch: b + 1, batches: nb, copies: c, file: pre + "backs.pdf", sheets: S * c });
             }
+            return l;
+        }
+        for (var k = 1; k <= root.copies; k++) {
+            l.push({ kind: "fronts", copy: k, of: root.copies, copies: 1, file: "fronts.pdf", sheets: S });
+            l.push({ kind: "backs", copy: k, of: root.copies, copies: 1, file: "backs.pdf", sheets: S });
         }
         return l;
+    }
+    // The sheets of one copy, fronts and backs: they must agree, or the backs land on the wrong fronts
+    function filesAgree() {
+        if (root.duplex) return "";
+        var f = fileNamed("fronts.pdf"), b = fileNamed("backs.pdf");
+        if (!f || !b) return "fronts.pdf or backs.pdf is missing - make the files again.";
+        if (f.pages !== b.pages) return "fronts.pdf has " + f.pages + " sheets but backs.pdf has " + b.pages + " - make the files again.";
+        if (root.result.sheets && f.pages !== root.result.sheets) return "fronts.pdf holds " + f.pages + " sheets, not one copy (" + root.result.sheets + ") - make the files again.";
+        return "";
+    }
+    // "Reprint one sheet" (a jam or a double-feed): its front, a stop, its back. Sheet 1 is the cover sheet.
+    function frontPageOf(n) { var S = root.result.sheets; return root.result.options.reverseFronts ? S + 1 - n : n; }
+    function reprintOneSheet(n) {
+        if (!root.result) return;
+        var why = filesAgree(); if (why) { root.phase = "failed"; root.runNote = why; return; }
+        var l;
+        if (root.duplex) l = [{ kind: "duplex", single: n, src: "main", batch: -1, copies: 1, file: "booklet.pdf", sheets: 1, pageRanges: [[2 * n - 1, 2 * n]] }];
+        else l = [{ kind: "fronts", single: n, src: "main", copies: 1, file: "fronts.pdf", sheets: 1, pageRanges: [[frontPageOf(n), frontPageOf(n)]] },
+                  { kind: "backs", single: n, src: "main", copies: 1, file: "backs.pdf", sheets: 1, pageRanges: [[n, n]] }];
+        insertSteps(l);
     }
     readonly property var step: root.stepIndex >= 0 && root.stepIndex < root.steps.length ? root.steps[root.stepIndex] : null
     function stepTitle(st) {
         if (!st) return "";
-        var b = st.reprint ? "Reprint" : (st.batches > 1 ? "Batch " + st.batch + " of " + st.batches : (st.copies > 1 ? st.copies + " copies" : "The zine"));
-        return b + ": " + (st.kind === "fronts" ? "fronts" : st.kind === "backs" ? "backs" : "both sides") + " (" + st.sheets + " sheet" + (st.sheets > 1 ? "s" : "") + ")";
+        var side = st.kind === "fronts" ? "fronts" : st.kind === "backs" ? "backs" : "both sides";
+        if (st.single) return "Sheet " + st.single + (st.single === 1 ? " (the cover sheet)" : "") + ": " + (st.kind === "fronts" ? "its front" : st.kind === "backs" ? "its back" : "both sides");
+        if (st.reprint) return "Reprint: " + side + " (" + st.sheets + " sheet" + (st.sheets > 1 ? "s" : "") + ")";
+        if (st.kind === "duplex") return (st.batches > 1 ? "Batch " + st.batch + " of " + st.batches : (st.copies > 1 ? st.copies + " copies" : "The zine")) + ": both sides (" + st.sheets + " sheets)";
+        return (st.of > 1 ? "Copy " + st.copy + " of " + st.of : "The zine") + ": " + side + " (" + st.sheets + " sheet" + (st.sheets > 1 ? "s" : "") + ")";
     }
+    readonly property string reloadText: "Put the printed stack back exactly as it came out: printed side up, not turned, not flipped, nothing else in the tray."
     function stepHow(st) {
         if (!st) return "";
-        if (st.kind === "fronts") return "Put " + st.sheets + " sheet" + (st.sheets > 1 ? "s" : "") + " of plain paper in the tray (a few more is fine), fanned and square.";
+        if (st.kind === "fronts") return st.single
+            ? "Put ONE sheet of plain paper in the tray, nothing else."
+            : "Put " + st.sheets + " sheet" + (st.sheets > 1 ? "s" : "") + " of plain paper in the tray - one copy's worth, fanned and square.";
         if (st.kind === "backs") return st.reprint
-            ? "Put the stack back in printed side up, the same way round as the test showed: the reprinted fronts and the sheets with a blank back together, in sheet order, as the backs pass had them."
-            : "Put the whole stack back in the tray printed side up, the same way round as the test showed - don't reorder it.";
+            ? "Put the stack back in printed side up, as it came out: the reprinted fronts and the sheets with a blank back together, in sheet order, as the backs pass had them. Nothing else in the tray."
+            : root.reloadText;
         return "Put " + st.sheets + " sheet" + (st.sheets > 1 ? "s" : "") + " of plain paper in the tray.";
+    }
+    // After a backs pass: what to look at before going on
+    function checkText(st) {
+        if (!st) return "";
+        if (st.single) {
+            var pl = root.info && root.info.plan ? root.info.plan[st.single - 1] : null;
+            return "Check sheet " + st.single + ": " + (pl ? "pages " + root.pageLabel(pl.back[0]) + "|" + root.pageLabel(pl.back[1]) + " on the back of " + root.pageLabel(pl.front[0]) + "|" + root.pageLabel(pl.front[1]) : "its back on the right side")
+                   + ", the right way up. Then put it in its place in the copy.";
+        }
+        return "Check the first sheet: page 2 on the back of the cover, the right way up. If it isn't, don't go on - see If it goes wrong.";
     }
 
     function startRun() {
         if (!root.result || (root.printMode === "ipp" && !root.printer)) return;
+        var why = filesAgree();
+        if (why) { root.runNote = why; root.phase = "failed"; root.steps = []; root.stepIndex = -1; return; }
         root.steps = buildSteps(); root.stepIndex = 0; root.phase = "ready"; root.runNote = ""; root.sort = {};
     }
     function endRun() { printPoll.stop(); root.phase = "idle"; root.steps = []; root.stepIndex = -1; root.pstat = null; root.printId = ""; }
@@ -271,6 +314,7 @@ Item {
         };
         if (root.sizeIndex >= 0) o.size = { attr: root.printer.sizes[root.sizeIndex].attr, key: root.printer.sizes[root.sizeIndex].key };
         if (root.qualityIndex >= 0) o.quality = { attr: root.printer.qualities[root.qualityIndex].attr, key: root.printer.qualities[root.qualityIndex].key };
+        if (root.printer.mediaType) o.mediaType = { attr: root.printer.mediaType.attr, key: root.printer.mediaType.key };
         if (st.pageRanges) o.pageRanges = st.pageRanges;
         root.phase = "printing"; root.pstat = { phase: "sending", done: 0, total: st.sheets }; root.runNote = "";
         callVia("printFile", [root.printerUri, f.path, JSON.stringify(o)], function (raw) {
@@ -307,11 +351,11 @@ Item {
         }
         if (st.pageRanges) l.push("- Pages: " + st.pageRanges.map(function (r) { return r[0] + "-" + r[1]; }).join(", ") + " (only these).");
         l.push("- Scale: Actual size / 100% - never \"Fit\" or \"Shrink to page\".");
-        l.push(o.scale >= 0.999
-               ? "- Paper: A4 borderless. These files go edge to edge; if your printer has no borderless A4, turn Borderless off above and make the files again."
-               : "- Paper: A4 borderless if the printer offers it, otherwise plain A4 - these files are shrunk to 96% so the margin doesn't cut them.");
+        l.push("- Paper: plain A4, NOT borderless (on many printers borderless is a slow, ink-heavy mode). Paper type: Plain."
+               + (o.scale >= 0.999 ? " These files go edge to edge, so the printer's own margin (about 3 mm) trims the outer edge." : ""));
         l.push("- Landscape (the viewer usually picks it from the file).");
         if (st.kind !== "duplex") l.push("- No \"reverse order\" / \"print in reverse\": the order is already in the file.");
+        l.push("- Nothing else waiting in the printer's queue: two jobs mixed together spoil the copy.");
         l.push("- Quality: Normal.");
         return l.join("\n");
     }
@@ -332,11 +376,15 @@ Item {
     }
     function stepDone() {
         var st = root.step;
-        if (root.stepIndex + 1 >= root.steps.length) { root.phase = "done"; return; }
-        root.stepIndex = root.stepIndex + 1;
-        if (st.kind === "fronts") { root.dryEnd = Date.now() + root.dryMinutes * 60000; root.now = Date.now(); root.phase = "dry"; }
-        else root.phase = "ready";
+        root.lastStep = st;
+        var last = root.stepIndex + 1 >= root.steps.length;
+        if (!last) root.stepIndex = root.stepIndex + 1;
+        if (st.kind === "fronts") { root.phase = last ? "done" : "reload"; return; }
+        if (st.kind === "backs") { root.phase = "check"; root.checkLast = last; return; }
+        root.phase = last ? "done" : "ready";
     }
+    property bool checkLast: false
+    function afterCheck() { root.phase = root.checkLast ? "done" : "ready"; }
     function stopNow() {
         if (root.phase !== "printing") return;
         root.runNote = "stopping...";
@@ -373,9 +421,10 @@ Item {
                 if (v === "both" || v === "back") list.push({ sheet: sh, side: "back" });
             }
         }
-        // drop the rest of this batch: the reprint completes it
+        // drop the rest of this copy (one side) or batch (both sides): the reprint completes it
+        var same = function (x) { return st.copy ? x.copy === st.copy : (st.batch !== undefined && x.batch === st.batch); };
         var next = root.stepIndex + 1;
-        while (next < root.steps.length && root.steps[next].batch === st.batch && !root.steps[next].reprint) next++;
+        while (next < root.steps.length && same(root.steps[next]) && !root.steps[next].reprint && !root.steps[next].single) next++;
         root.steps = root.steps.slice(0, root.stepIndex + 1).concat(root.steps.slice(next));
         queueReprint(list, dsheets);
     }
@@ -428,8 +477,6 @@ Item {
         if (root.duplex) queueReprint([], Object.keys(ds).map(function (x) { return parseInt(x); }));
         else queueReprint(list, []);
     }
-    Timer { interval: 1000; repeat: true; running: root.phase === "dry"; onTriggered: root.now = Date.now() }
-    function mmss(ms) { ms = Math.max(0, ms); var m = Math.floor(ms / 60000), sec = Math.floor(ms / 1000) % 60; return m + ":" + (sec < 10 ? "0" : "") + sec; }
     // the printer's own problems, in words
     function reasonText(rs) {
         var out = [];
@@ -508,7 +555,7 @@ Item {
                         onPicked: function (k) { root.duplex = k }
                     }
                     Toggle { text: "Borderless A4 (prints to the edge)"; checked: root.borderless; onToggled: function (v) { root.borderless = v } }
-                    Hint { text: root.borderless ? "Pages fill their half of the sheet." : "Pages are shrunk to 96% so the printer's margin doesn't cut them." }
+                    Hint { text: root.borderless ? "Pages fill their half of the sheet; on plain A4 the printer's own margin (about 3 mm) trims the outer edge." : "Pages are shrunk to 96% so the printer's margin doesn't cut them." }
                     Toggle { text: "Flatten to 300 dpi images"; checked: root.flatten; onToggled: function (v) { root.flatten = v } }
                     Hint { text: root.flatten ? "Small files that print at the printer's own speed. Recommended." : "Vector files: sharpest, but a busy zine can take minutes per sheet in the printer driver." }
                     Chips {
@@ -522,10 +569,10 @@ Item {
                         spacing: Theme.spacing.medium
                         LogosText { textFormat: Text.PlainText; text: "Copies"; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.primaryText }
                         Stepper { value: root.copies; from: 1; to: 50; onChanged: function (v) { root.copies = v } }
-                        LogosText { textFormat: Text.PlainText; visible: !root.duplex; text: "per batch"; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.primaryText }
-                        Stepper { visible: !root.duplex; value: root.batch; from: 1; to: 5; onChanged: function (v) { root.batch = v } }
+                        LogosText { textFormat: Text.PlainText; visible: root.duplex; text: "per batch"; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.primaryText }
+                        Stepper { visible: root.duplex; value: root.batch; from: 1; to: 5; onChanged: function (v) { root.batch = v } }
                     }
-                    Hint { visible: !root.duplex; text: "A double-feed (two sheets pulled at once) ruins every sheet after it in the batch: keep batches at 2-3 copies." }
+                    Hint { visible: !root.duplex; text: "One copy at a time: its fronts, then you put the stack back, then its backs, then you check the cover sheet - and only then the next copy. A wrong reload spoils one copy, not all of them." }
                     Toggle { visible: !root.duplex; text: "Fronts last sheet first"; checked: root.reverseFronts; onToggled: function (v) { root.reverseFronts = v } }
                     Hint { visible: !root.duplex; text: "Most one-sided printers stack the output face up, last sheet on top: printing the fronts backwards makes the stack come out in order. The one-sheet test tells you." }
                 }
@@ -651,12 +698,13 @@ Item {
                                 onActivated: function (i) { root.qualityIndex = i }
                             }
                         }
-                        Toggle { text: "Fit to page"; checked: root.fitToPage; onToggled: function (v) { root.fitToPage = v } }
+                        Hint { visible: !!root.printer && !!root.printer.mediaType; text: root.printer && root.printer.mediaType ? "Paper type: " + root.printer.mediaType.label + "." : "" }
+                        Toggle { text: "Fit to page (shrinks the page - leave off)"; checked: root.fitToPage; onToggled: function (v) { root.fitToPage = v } }
                         Hint { visible: !!root.printer && !root.printer.pdf; text: "This printer doesn't say it takes PDF files - printing may fail." }
-                        Hint { visible: !!root.chosenSize && root.chosenSize.borderless && !root.filesBorderless
-                               text: "Borderless paper, but the files are shrunk to 96% for a printer with margins: they will print with a white frame. Turn on Borderless A4 (2) and make the files again to print edge to edge." }
+                        Hint { visible: !!root.chosenSize && root.chosenSize.borderless
+                               text: "Borderless is the printer's own borderless mode: it prints slowly and uses a lot of ink, even at Normal quality. Plain A4 at actual size looks right for a zine." }
                         Hint { visible: !!root.chosenSize && !root.chosenSize.borderless && root.filesBorderless && !root.fitToPage
-                               text: "The files are borderless but the paper isn't: the printer's margin will cut the edges. Pick the borderless A4 size or turn on Fit to page." }
+                               text: "The files go edge to edge: the printer's own margin (about 3 mm) trims the outer edge. That's expected." }
                         Hint { visible: !!root.printer && root.duplex && !root.printer.duplex; text: "This printer can't print both sides: choose \"one side at a time\" above and make the files again." }
                     }
 
@@ -667,7 +715,7 @@ Item {
                         spacing: Theme.spacing.small
                         LogosText { textFormat: Text.PlainText; visible: !root.result && root.phase === "idle"; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
                             text: "Make the files first (3)."; color: Theme.palette.textTertiary; font.pixelSize: Theme.typography.secondaryText }
-                        LogosButton { visible: root.phase === "idle" && !!root.result; text: "Print " + (root.result && root.result.options.copies > 1 ? root.result.options.copies + " copies" : "the zine"); onClicked: root.startRun() }
+                        LogosButton { visible: root.phase === "idle" && !!root.result; text: "Print " + (root.copies > 1 ? root.copies + " copies" : "the zine"); onClicked: root.startRun() }
 
                         LogosText { textFormat: Text.PlainText; visible: !!root.step && root.phase !== "idle" && root.phase !== "done"; text: root.stepTitle(root.step); font.weight: Font.Bold; color: Theme.palette.text; font.pixelSize: Theme.typography.primaryText }
 
@@ -676,7 +724,7 @@ Item {
                         RowLayout {
                             visible: root.phase === "ready"
                             spacing: Theme.spacing.medium
-                            LogosButton { text: root.step && root.step.batch > 1 && root.step.kind !== "backs" && !root.step.reprint ? "Next batch" : (root.printMode === "open" ? "Open " + (root.step ? root.step.file : "") : "Start"); onClicked: root.sendStep() }
+                            LogosButton { text: root.printMode === "open" ? "Open " + (root.step ? root.step.file : "") : (root.step && root.step.kind === "backs" ? "Print the backs" : root.step && root.step.kind === "fronts" ? "Print the fronts" : "Print"); onClicked: root.sendStep() }
                             LogosButton { text: "End"; onClicked: root.endRun() }
                         }
 
@@ -716,18 +764,40 @@ Item {
                             text: root.pstat ? root.reasonText(root.pstat.printerReasons) : ""; color: Theme.palette.error; font.pixelSize: Theme.typography.primaryText }
                         LogosButton { visible: root.phase === "printing"; text: "Stop"; onClicked: root.stopNow() }
 
-                        // drying
-                        LogosText { textFormat: Text.PlainText; visible: root.phase === "dry"; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
-                            text: "The fronts are printed. Let them dry 10-15 minutes and fan them well - fresh ink makes sheets cling together. " + root.stepHow(root.step) + " Then press Continue for the backs."
+                        // fronts are out: the stack goes back, exactly as it came out
+                        LogosText { textFormat: Text.PlainText; visible: root.phase === "reload"; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
+                            text: (root.lastStep && root.lastStep.single ? "The front of sheet " + root.lastStep.single + " is printed." : "The fronts are printed. Check the top sheet is the cover.")
+                                  + "\n\n" + root.reloadText
+                                  + "\n\nIf the ink is still wet, let it dry a few minutes and fan the sheets first - damp sheets cling and pull through two at a time."
                             color: Theme.palette.text; font.pixelSize: Theme.typography.primaryText }
-                        LogosText { textFormat: Text.PlainText; visible: root.phase === "dry"
-                            text: root.dryEnd > root.now ? "Drying: " + root.mmss(root.dryEnd - root.now) : "Dry - continue when the stack is back in."
-                            font.pixelSize: Theme.typography.subtitleText; font.weight: Font.Bold; color: root.dryEnd > root.now ? Theme.palette.textSecondary : Theme.palette.primary }
                         RowLayout {
-                            visible: root.phase === "dry"
+                            visible: root.phase === "reload"
                             spacing: Theme.spacing.medium
-                            LogosButton { text: "Continue"; onClicked: root.sendStep() }
+                            LogosButton { text: root.printMode === "open" ? "Open " + (root.step ? root.step.file : "") : (root.step && root.step.single ? "Print its back" : "Print the backs"); onClicked: root.sendStep() }
                             LogosButton { text: "End"; onClicked: root.endRun() }
+                        }
+
+                        // backs are out: look before the next copy
+                        LogosText { textFormat: Text.PlainText; visible: root.phase === "check"; Layout.fillWidth: true; Layout.preferredWidth: 100; wrapMode: Text.WordWrap
+                            text: root.checkText(root.lastStep); color: Theme.palette.text; font.pixelSize: Theme.typography.primaryText }
+                        RowLayout {
+                            visible: root.phase === "check"
+                            spacing: Theme.spacing.medium
+                            LogosButton { text: root.checkLast ? "Done" : (root.step && root.step.kind === "fronts" && root.step.copy ? "Next copy (" + root.step.copy + " of " + root.step.of + ")" : "Go on"); onClicked: root.afterCheck() }
+                            LogosButton { text: "Something's wrong"; onClicked: { root.stepIndex = Math.max(0, root.steps.indexOf(root.lastStep)); root.toStopped(); } }
+                        }
+
+                        // one sheet again (a jam, a double-feed, a smudge): its front, a stop, its back
+                        RowLayout {
+                            visible: !!root.result && (root.phase === "idle" || root.phase === "done" || root.phase === "check" || root.phase === "ready")
+                            spacing: Theme.spacing.small
+                            LogosText { textFormat: Text.PlainText; text: "Reprint one sheet"; color: Theme.palette.textSecondary; font.pixelSize: Theme.typography.secondaryText }
+                            Stepper { value: root.oneSheet; from: 1; to: root.result ? root.result.sheets : 1; onChanged: function (v) { root.oneSheet = v } }
+                            LogosText { textFormat: Text.PlainText
+                                text: { var pl = root.info && root.info.plan ? root.info.plan[root.oneSheet - 1] : null;
+                                        return (root.oneSheet === 1 ? "cover sheet " : "") + (pl ? "(" + root.pageLabel(pl.front[0]) + "|" + root.pageLabel(pl.front[1]) + ", back " + root.pageLabel(pl.back[0]) + "|" + root.pageLabel(pl.back[1]) + ")" : ""); }
+                                color: Theme.palette.textTertiary; font.pixelSize: Theme.typography.secondaryText }
+                            SmallButton { text: "\u2192"; enabled: root.printMode === "open" || !!root.printer; onClicked: root.reprintOneSheet(root.oneSheet) }
                         }
 
                         // stopped: sort the sheets
@@ -881,9 +951,9 @@ Item {
 
     // ── the guide (also written to HOW-TO-PRINT.txt with each job) ──
     readonly property string guideCommon:
-        "Printer settings for every file: A4 paper, landscape, actual size / 100% - never \"fit to page\". "
-        + (root.borderless ? "Borderless printing on. " : "")
-        + "Quality Normal: Fine is much slower and you won't see the difference on plain paper.\n\n"
+        "Printer settings for every file: plain A4 paper (not borderless - on many printers that is a slow, ink-heavy mode), paper type Plain, landscape, actual size / 100% - never \"fit to page\". "
+        + "Quality Normal: Fine is much slower and you won't see the difference on plain paper. "
+        + "Nothing else in the printer's queue while you print.\n\n"
     readonly property string guideDuplex: guideCommon
         + "Print booklet.pdf on both sides, \"flip on the short edge\".\n\n"
         + "Then fold the stack in the middle - see Fold and bind."
@@ -892,11 +962,12 @@ Item {
         + "Put the sheet back in the tray the way your printer needs to print the other side - for most: printed side up, the same edge first. "
         + "Print page 2. Fold it: the inside of the cover must be page 2. If it isn't, turn the sheet the other way and note what works: "
         + "that is how the whole stack goes back in.\n\n"
-        + "2. Print the fronts file" + (root.reverseFronts ? " (it runs last sheet first, so the stack comes out ready for the backs)" : "") + ".\n\n"
-        + "3. Let the fronts dry 10-15 minutes, then fan them well before they go back in. Fresh ink makes sheets cling together: double-feeds happen on the backs pass.\n\n"
-        + "4. Put the stack back in the tray the way the test showed, and print the backs file.\n\n"
-        + "5. The finished stack is in order: the cover sheet at the bottom, cover face down.\n\n"
-        + (root.copies > 1 ? "With " + root.copies + " copies the files come in batches of " + root.batch + " (each batch holds whole copies). Print one batch's fronts and backs before the next: a double-feed then only ruins one batch.\n\n" : "")
+        + "One copy at a time. For each copy:\n"
+        + "2. Print the fronts file" + (root.reverseFronts ? " (it runs last sheet first, so the stack comes out with the cover on top)" : "") + ". Check the top sheet is the cover.\n\n"
+        + "3. Put the printed stack back exactly as it came out: printed side up, not turned, not flipped, nothing else in the tray. If the ink is still wet, let it dry a few minutes and fan the sheets first: damp sheets cling and double-feed on the backs pass.\n\n"
+        + "4. Print the backs file. Check the first sheet: page 2 on the back of the cover, the right way up.\n\n"
+        + "5. Only then the next copy. A wrong reload then spoils one copy, not all of them.\n\n"
+        + "A sheet jammed or two went through at once: Reprint one sheet (sheet 1 is the cover sheet) prints its front, stops for you to put it back, then prints its back.\n\n"
         + "Before a big run: pull the paper stack out, fan it and put it back square - most double-feeds come from sheets stuck together.\n\n"
         + "Out of paper in the middle of a job: add paper, push the tray fully in and press the button the printer asks for (on a Brother: Mono Copy). The job carries on where it stopped."
     readonly property string guideBind:
@@ -921,7 +992,8 @@ Item {
         + "3. On the sheet plan, tap the sides to print again and press Reprint. You get reprint-fronts.pdf and reprint-backs.pdf with just those sides.\n"
         + "4. Print the fronts and let them dry. Stack them with the blank-back sheets in sheet order, as the backs pass had them, put the stack in the same way round as before and print the backs.\n\n"
         + "Out of paper in the middle of a job: add paper, push the tray fully in and press the button the printer asks for (on a Brother: Mono Copy). The job carries on.\n\n"
-        + "Pages are cut off at the edge: turn off Borderless (or your printer has a wider margin than most - try the whole page option)."
+        + "Pages are cut off at the edge: turn off Borderless in (2) and make the files again - they are then shrunk to 96% to clear the printer's margin.\n\n"
+        + "Printing is slow and soaks the paper: check the paper size isn't a borderless one, and the quality is Normal."
 
     // ── small parts ──
     component Card: Rectangle {

@@ -426,8 +426,11 @@ std::string guideText(int pages, int S, const Options& o, const json& files) {
     for (const auto& f : files) g << "  " << f.value("name", "") << " - " << f.value("what", "") << "\n";
     g << "  HOW-TO-PRINT.txt - this guide\n\n"
       << "PRINTER SETTINGS (every file)\n"
-      << "  - Paper A4, landscape, actual size / 100% (never \"fit to page\").\n";
-    if (o.scale >= 0.999) g << "  - Borderless printing ON: the pages are laid out edge to edge.\n";
+      << "  - Plain A4 paper, paper type Plain, landscape, actual size / 100% (never \"fit to page\").\n"
+      << "  - NOT borderless: on many printers (Brother DCP-T230: BrA4_B) that is the printer's own\n"
+      << "    borderless mode - slow and heavy on ink even at Normal quality.\n"
+      << "  - Nothing else waiting in the printer's queue: two jobs mixed together spoil the copy.\n";
+    if (o.scale >= 0.999) g << "  - The pages are laid out edge to edge: the printer's own margin (about 3 mm) trims the outer edge.\n";
     else g << "  - Pages are shrunk to " << (int)std::lround(o.scale * 100) << "% so the printer's unprintable margin doesn't cut them.\n";
     g << "  - Quality Normal. Fine is much slower and you won't see a difference on plain paper.\n\n"
       << "A PRINTER THAT PRINTS BOTH SIDES\n"
@@ -442,10 +445,15 @@ std::string guideText(int pages, int S, const Options& o, const json& files) {
     if (o.reverseFronts) g << "It runs last sheet first: most one-sided printers stack the\n"
                            << "     output face up with the last sheet on top, so the stack comes out ready for the backs.\n";
     else g << "It runs first sheet first (you turned off the reverse order).\n";
-    g << "  3. Let the fronts dry 10-15 minutes, then fan them well before they go back in. Fresh ink\n"
-      << "     makes sheets cling together: double-feeds happen on the backs pass, not the fronts.\n"
-      << "  4. Put the whole stack back in the tray the way the test showed, and print the backs file.\n"
-      << "  5. The finished stack is in order: the cover sheet at the bottom, cover face down.\n";
+    g << "     Check the top sheet is the cover.\n"
+      << "  3. Put the printed stack back EXACTLY as it came out: printed side up, not turned, not\n"
+      << "     flipped, nothing else in the tray. If the ink is still wet, let it dry a few minutes and\n"
+      << "     fan the sheets first: damp sheets cling and double-feed on the backs pass.\n"
+      << "  4. Print the backs file. Check the first sheet: page 2 on the back of the cover.\n"
+      << "  5. ONE COPY AT A TIME: only then the fronts of the next copy. A wrong reload then spoils\n"
+      << "     one copy, not all of them.\n"
+      << "  One sheet jammed or spoilt: print just that sheet's front, put it back as it came out,\n"
+      << "  then its back (Zine Press: Reprint one sheet; sheet 1 is the cover sheet).\n";
     if (o.copies > 1) g << "  " << o.copies << " copies in batches of " << o.batch << ": each batch file holds whole copies (collated).\n"
                         << "  A double-feed (two sheets pulled at once) ruins every sheet after it in that batch -\n"
                         << "  small batches keep the damage small.\n";

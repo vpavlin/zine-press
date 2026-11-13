@@ -60,12 +60,15 @@ json printerInfo(const std::string& uri, bool wantBorderless, int timeoutMs);
 json parsePpd(const std::string& ppd);
 
 // Print-Job: returns {ok, jobId, jobUri} or {ok:false, error}. opts: {title, copies, collate, sides,
-// size:{attr,key}, quality:{attr,key}, fitToPage, cups (a CUPS queue), pageRanges:[[from,to],...]}
+// size:{attr,key}, quality:{attr,key}, mediaType:{attr,key}, fitToPage (else print-scaling=none),
+// cups (a CUPS queue), pageRanges:[[from,to],...]}
 json printJob(const std::string& uri, const std::string& pdfPath, const json& opts, int timeoutMs);
 // Get-Job-Attributes: {ok, state (ipp enum), stateName, reasons, message, impressions, sheets}
 json jobStatus(const std::string& uri, int jobId, int timeoutMs);
 // Get-Printer-Attributes for the live state while printing: {state, reasons, message}
 json printerState(const std::string& uri, int timeoutMs);
+// Jobs the printer still has (queued or printing): {ok, count}. queued-job-count, else Get-Jobs.
+json queuedJobs(const std::string& uri, int timeoutMs);
 json cancelJob(const std::string& uri, int jobId, int timeoutMs);
 
 std::string userName();

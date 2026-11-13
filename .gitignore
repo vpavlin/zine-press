@@ -1,3 +1,6 @@
 ref/*.pdf
 result*
 /out/
+
+# the printer driver file the IPP test serves (Brother's, fetched from the queue)
+zine_press_core/test/*.ppd

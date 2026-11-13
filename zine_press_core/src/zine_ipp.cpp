@@ -509,13 +509,30 @@ json printerInfo(const std::string& uri, bool wantBorderless, int timeoutMs) {
         }
         o["qualityLabel"] = "Print quality";
     }
-    // Zine Press's picks: A4 (borderless when asked and the printer has one), Normal quality
+    // Zine Press's picks: plain A4 at actual size, Normal quality. Borderless only when asked for: on
+    // the Brother DCP-T230 (BrA4_B, PJL BORDERLESS=ON) it prints slowly and ink-heavy even at Normal,
+    // like Fine (spoilt copies, 2026-11-13). A plain size called exactly "A4" first.
+    for (const auto& s : sizes)
+        if (s["a4"] && !s["borderless"].get<bool>() && lower(s["key"]) == "a4") { defSize = s["key"]; break; }
     for (int pass = 0; pass < 2 && defSize.empty(); pass++)
         for (const auto& s : sizes)
             if (s["a4"] && (pass == 1 || s["borderless"].get<bool>() == wantBorderless)) { defSize = s["key"]; break; }
+    for (auto& s : sizes)
+        if (s["borderless"].get<bool>()) s["label"] = s["label"].get<std::string>() + " - slow, heavy on ink";
     if (defSize.empty()) defSize = ppdDefSize;
     for (const auto& qv : quals) if (lower(qv["label"]) == "normal" || lower(qv["key"]) == "normal") { defQual = qv["key"]; break; }
     if (defQual.empty()) defQual = ppdDefQual;
+    if (havePpd) {
+        json p = parsePpd(ppd);
+        for (const char* mo : {"BRMediaType", "MediaType", "media-type"}) {
+            if (!p["options"].contains(mo)) continue;
+            for (const auto& c : p["options"][mo]["choices"])
+                if (lower(c.value("key", "")) == "plain" || lower(c.value("label", "")).rfind("plain", 0) == 0) {
+                    o["mediaType"] = {{"attr", mo}, {"key", c["key"]}, {"label", c["label"]}}; break;
+                }
+            if (o.contains("mediaType")) break;
+        }
+    }
     o["sizes"] = sizes; o["qualities"] = quals;
     o["defaultSize"] = defSize; o["defaultQuality"] = defQual;
     return o;
@@ -549,9 +566,13 @@ json printJob(const std::string& uri, const std::string& pdfPath, const json& op
     }
     choice("size");
     choice("quality");
+    choice("mediaType");
     if (opts.value("fitToPage", false)) {
         if (opts.value("cups", false)) q.addBool("fit-to-page", true);
         else q.add(T_KEYWORD, "print-scaling", "fit");
+    } else {
+        // actual size, said out loud: a queue's own default may be to fit, which squashes the page
+        q.add(T_KEYWORD, "print-scaling", "none");
     }
     Response r = call(uri, q.bytes(), doc, timeoutMs);
     if (!r.ok) return {{"ok", false}, {"error", r.error.empty() ? "printing failed" : r.error}};
@@ -581,6 +602,26 @@ json printerState(const std::string& uri, int timeoutMs) {
     Response r = call(uri, q.bytes(), "", timeoutMs);
     if (!r.ok) return {{"ok", false}, {"error", r.error}};
     return {{"ok", true}, {"state", std::atoi(first(r, "printer-state").c_str())}, {"reasons", all(r, "printer-state-reasons")}, {"message", first(r, "printer-state-message")}};
+}
+
+json queuedJobs(const std::string& uri, int timeoutMs) {
+    Request q(0x000B, uri);
+    q.add(T_NAME, "requesting-user-name", userName());
+    q.add(T_KEYWORD, "requested-attributes", std::vector<std::string>{"queued-job-count"});
+    Response r = call(uri, q.bytes(), "", timeoutMs);
+    if (!r.ok) return {{"ok", false}, {"error", r.error}};
+    const std::string n = first(r, "queued-job-count");
+    if (!n.empty()) return {{"ok", true}, {"count", std::atoi(n.c_str())}};
+    // no queued-job-count: count the unfinished jobs
+    Request g(0x000A, uri);
+    g.add(T_NAME, "requesting-user-name", userName());
+    g.add(T_KEYWORD, "which-jobs", "not-completed");
+    g.add(T_KEYWORD, "requested-attributes", std::vector<std::string>{"job-id", "job-state"});
+    Response j = call(uri, g.bytes(), "", timeoutMs);
+    if (!j.ok) return {{"ok", false}, {"error", j.error}};
+    int c = 0;
+    for (const auto& gr : j.groups) if (gr.first == JOB) c++;
+    return {{"ok", true}, {"count", c}};
 }
 
 json cancelJob(const std::string& uri, int jobId, int timeoutMs) {

@@ -40,7 +40,7 @@ public:
         std::lock_guard<std::mutex> l(t->mtx);
         return {{"ok", true}, {"printId", id}, {"phase", t->phase}, {"jobId", t->jobId}, {"done", t->done}, {"total", t->total},
                 {"jobState", t->jobState}, {"jobMessage", t->jobMessage}, {"printerReasons", t->reasons}, {"printerMessage", t->printerMessage},
-                {"error", t->error}, {"note", t->note}};
+                {"error", t->error}, {"note", t->note}, {"busy", t->busy}};
     }
 
     // Stop now: Cancel-Job if the printer has the job, otherwise as soon as it does
@@ -62,7 +62,7 @@ private:
     struct Task {
         std::mutex mtx;
         int id = 0, jobId = 0, done = 0, total = 0;
-        bool duplex = false, cancelSent = false;
+        bool duplex = false, cancelSent = false, busy = false;
         std::atomic<bool> stop{false};
         std::string uri, phase = "sending", jobState, jobMessage, printerMessage, error, note;
         std::vector<std::string> reasons;
@@ -79,6 +79,18 @@ private:
     }
 
     static void run(std::shared_ptr<Task> t, std::string path, json opts) {
+        // Never put a job behind another one: two jobs interleaving on a one-sided run spoil a copy.
+        // (If the printer can't say, the print goes ahead; Print-Job reports a dead printer anyway.)
+        json qj = ipp::queuedJobs(t->uri, 10000);
+        if (qj.value("ok", false) && qj.value("count", 0) > 0) {
+            const int n = qj["count"];
+            std::lock_guard<std::mutex> l(t->mtx);
+            t->phase = "error"; t->busy = true;
+            t->error = "The printer already has " + std::string(n == 1 ? "a job" : std::to_string(n) + " jobs")
+                     + " in its queue. Wait for it to finish, or cancel it, then try again.";
+            return;
+        }
+        if (t->stop) { std::lock_guard<std::mutex> l(t->mtx); t->phase = "canceled"; return; }
         json r = ipp::printJob(t->uri, path, opts, 120000);
         {
             std::lock_guard<std::mutex> l(t->mtx);

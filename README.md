@@ -15,8 +15,7 @@ For a PDF of the zine's pages in reading order (cover first):
 | File | What it's for |
 |---|---|
 | `booklet.pdf` | printers that print both sides: print two-sided, **flip on the short edge** |
-| `fronts.pdf`, `backs.pdf` | printers that print one side at a time: fronts first, then the stack goes back in for the backs |
-| `batch-N-fronts.pdf`, `batch-N-backs.pdf` | the same, for several copies, a few whole copies per batch |
+| `fronts.pdf`, `backs.pdf` | printers that print one side at a time: ONE copy - its fronts, then the stack goes back in for its backs; repeat per copy |
 | `test-sheet.pdf` | one sheet, to find out which way your printer takes the paper back in |
 | `reprint-fronts.pdf`, `reprint-backs.pdf` | after a double-feed: only the sheet sides you marked for printing again |
 | `HOW-TO-PRINT.txt` | the steps for this job |
@@ -44,16 +43,19 @@ any other size is scaled to fit A5.
    sheet back in the tray the way your printer needs to print the other side (for most: printed side
    up, the same edge first) and print page 2. Fold it: the inside of the cover must be page 2. If it
    isn't, turn the sheet the other way. Now you know how the whole stack goes back in.
-2. **Print the fronts.** Zine Press puts them last sheet first: most one-sided printers stack the
-   output face up with the last sheet on top, so the stack comes out ready for the backs.
-3. **Let the fronts dry 10-15 minutes**, then fan them well before they go back in. Fresh ink makes
-   sheets cling together: on the first five copies of the LAN zine, both double-feeds happened on the
-   backs pass, with fronts printed a few minutes earlier.
-4. **Print the backs**, with the stack back in the tray the way the test showed. The finished stack is
-   in order: the cover sheet at the bottom, cover face down.
+2. **Print the fronts of one copy.** Zine Press puts them last sheet first: most one-sided printers
+   stack the output face up with the last sheet on top, so the stack comes out with the cover on top.
+   Check the top sheet is the cover.
+3. **Put the printed stack back exactly as it came out:** printed side up, not turned, not flipped,
+   nothing else in the tray. If the ink is still wet, let it dry a few minutes and fan the sheets
+   first: damp sheets cling, and the double-feeds on the LAN zine happened on the backs pass.
+4. **Print the backs.** Check the first sheet: page 2 on the back of the cover, the right way up.
+5. **Only then the next copy.** One copy at a time: a wrong reload spoils one copy, not all of them
+   (learnt on a Brother DCP-T230, 2026-11-13, after five spoilt copies of LAN issue 02).
 
-Several copies: print them in **batches of 2 or 3**. A double-feed (two sheets pulled at once) shifts
-every sheet after it, and the rest of the batch is printed wrong.
+**One sheet jammed or went through with another:** print just that sheet again - its front, put it
+back as it came out, then its back (the app's **Reprint one sheet**). Sheet 1 is the cover sheet; for
+a 24-page zine sheet 6 is 14|11 with 12|13 on the back.
 
 **When a double-feed happens:**
 
@@ -69,9 +71,12 @@ every sheet after it, and the rest of the batch is printed wrong.
 **Out of paper in the middle of a job:** add paper, push the tray fully in and press the button the
 printer asks for (on a Brother DCP: **Mono Copy**). The job carries on where it stopped.
 
-**Settings:** A4, landscape, actual size / 100% (never "fit to page"). Quality **Normal**: Fine is much
-slower and you won't see the difference on plain paper. A borderless printer can print the pages
-full size (Borderless on); otherwise they are shrunk to 96% so the margin doesn't cut them.
+**Settings:** **plain A4** (not borderless), paper type Plain, landscape, **actual size / 100%** (never
+"fit to page"), quality **Normal**. On a Brother DCP-T230 the borderless size (`BrA4_B`) is the
+printer's real borderless mode: slow and ink-heavy even at Normal, like Fine. Plain A4 at actual size
+looks right; the printer leaves its own ~3 mm edge. Files are shrunk to 96% by default so that edge
+doesn't cut them (Borderless on in the app keeps them full size and lets the edge trim them).
+Nothing else may be waiting in the printer's queue: two jobs interleaved spoil the copy.
 
 **Flatten to 300 dpi** (on by default): the pages are rendered to images. The LAN zine's 40 MB of
 detailed artwork took minutes per sheet in the printer driver; flattened, the files are a few MB and
@@ -79,33 +84,38 @@ print at the printer's own speed.
 
 ## Printing from the app
 
-**4. Print, step by step** walks you through the batches. It has two modes.
+**4. Print, step by step** walks you through it, one copy at a time. It has two modes.
 
 **Open for printing** (the default) works with any printer your computer has, on Linux, macOS and
 Windows. Each file opens in your PDF viewer and you print it from the viewer's own print dialog.
 Those dialogs default badly for booklets, so every step says what to set:
 
 - Scale: **Actual size / 100%**, never "Fit" or "Shrink to page".
-- Paper: **A4 borderless** if the printer offers it, otherwise plain A4 with files made with
-  Borderless off (shrunk to 96%).
+- Paper: **plain A4**, not borderless; paper type Plain.
 - **No "reverse order"**: the order is already in the files.
-- One-sided printers: Copies 1, the copies are already in the batch files. Two-sided printers:
-  `booklet.pdf`, both sides, **flip on the short edge**, copies collated.
+- One-sided printers: Copies 1 - the files are one copy, and the app repeats them per copy. Two-sided
+  printers: `booklet.pdf`, both sides, **flip on the short edge**, copies collated.
 
-The steps: open the fronts → print → dry 10-15 minutes (a countdown) and fan them → put the stack
-back → open the backs → print → next batch. **Something went wrong** (a double-feed): cancel the job
-in the print queue, sort the sheets of that batch (done, needs its back, both sides again), and
+The steps, per copy: open the fronts → print → **stop**: put the stack back exactly as it came out →
+open the backs → print → **stop**: check page 2 is on the back of the cover → **Next copy**.
+**Reprint one sheet** prints a single sheet's front, stops, then its back (page ranges of the same
+files). **Something went wrong** (a double-feed): cancel the job in the print queue, sort the sheets
+of that copy (done, needs its back, both sides again), and
 Zine Press makes and opens exactly the reprints, then carries on. Sides marked on the sheet plan can
 be printed any time with **Print these**.
 
 **Send to a printer** talks to a printer Zine Press can reach directly, over IPP: one set up in this
 computer's CUPS, or a network printer by its address, e.g. `ipp://printserver:631/printers/NAME` for
 a printer shared by another computer's CUPS. It follows the job (progress, **Stop** cancels at once,
-also while it waits in the queue) and does the same drying, sorting and reprints.
+also while it waits in the queue) and does the same stops, sorting and reprints. It **refuses to send
+while the printer already has a job queued**, so two jobs never interleave.
 
 1. The paper size and quality lists come from the printer itself (for a CUPS printer, from its
    driver: a Brother DCP-T230 offers "A4 (Borderless)" and Print Quality Draft / Normal / Fine).
-   Zine Press picks borderless A4 if there is one, Normal quality, and fit to page.
+   Zine Press picks **plain A4** (borderless sizes are labelled "slow, heavy on ink" and used only
+   when you choose one), Normal quality, paper type Plain when the driver has it, and **actual size**
+   (it sends `print-scaling=none`; Fit to page is off). For the DCP-T230 that is exactly
+   `PageSize=A4 BRResolution=Normal BRMediaType=Plain print-scaling=none`.
 2. A printer that prints both sides gets one step per batch: the booklet, two-sided, flip on the
    short edge, with the batch's copies collated. Its reprints use page ranges of the same booklet.
 3. If the printer runs out of paper, the app says so (from the printer's own status): add paper,

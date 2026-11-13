@@ -191,7 +191,7 @@ std::string ZinePressCoreImpl::addPrinter(std::string uri) {
     uri = trim(uri);
     if (uri.rfind("ipps://", 0) == 0) return json({{"ok", false}, {"error", "ipps:// (encrypted) isn't supported yet - use the ipp:// address"}}).dump();
     if (uri.find("://") == std::string::npos) uri = "ipp://" + uri;
-    json info = zine::ipp::printerInfo(uri, true, 8000);
+    json info = zine::ipp::printerInfo(uri, false, 8000);
     if (!info.value("ok", false)) return info.dump();
     std::lock_guard<std::mutex> lk(m_cfgMtx);
     json cfg = loadConfig();
@@ -215,7 +215,7 @@ std::string ZinePressCoreImpl::forgetPrinter(std::string uri) {
 }
 
 std::string ZinePressCoreImpl::printerInfo(std::string uri) {
-    json info = zine::ipp::printerInfo(trim(uri), true, 8000);
+    json info = zine::ipp::printerInfo(trim(uri), false, 8000);
     if (info.value("ok", false)) {
         std::lock_guard<std::mutex> lk(m_cfgMtx);
         json cfg = loadConfig();

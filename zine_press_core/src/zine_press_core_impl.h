@@ -42,7 +42,7 @@ public:
     std::string forgetPrinter(std::string uri);
     // Capabilities: sizes, qualities, duplex, defaults (blocks for up to ~8 s: call it async)
     std::string printerInfo(std::string uri);
-    // Send a PDF: {ok, printId}. jobOptionsJson: {title, copies, collate, sides, size, quality, fitToPage, cups, pageRanges, sheets, duplex}
+    // Send a PDF: {ok, printId}. jobOptionsJson: {title, copies, collate, sides, size, quality, mediaType, fitToPage, cups, pageRanges, sheets, duplex}. Refuses (phase error, busy) while the printer has a job queued.
     std::string printFile(std::string uri, std::string path, std::string jobOptionsJson);
     // {phase: sending|queued|printing|stopped|completed|canceled|aborted|error|lost, done, total, printerReasons, ...}
     std::string printStatus(std::string printId);
